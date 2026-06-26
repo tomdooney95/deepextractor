@@ -1,6 +1,33 @@
 Training
 ========
 
+Glitch reconstruction dataset
+------------------------------
+
+DeepExtractor reconstructions of seven LIGO O3 glitch classes (35,000 samples) are
+available for download from HuggingFace:
+`tomdooney/deepextractor-glitch-reconstructions <https://huggingface.co/datasets/tomdooney/deepextractor-glitch-reconstructions>`_
+
+These reconstructions are suitable for training generative models such as GlitchGAN
+and for any downstream task requiring high-quality time-domain glitch waveforms.
+
+.. code-block:: python
+
+   from deepextractor.data import download_glitch_data
+
+   paths = download_glitch_data("data/glitches/")
+   # paths["samples"]     → (35000, 8192) whitened waveforms
+   # paths["labels"]      → (35000, 7)   one-hot class labels
+   # paths["label_order"] → ['Blip', 'Fast_Scattering', 'Koi_Fish',
+   #                          'Low_Frequency_Burst', 'Scattered_Light', 'Tomte', 'Whistle']
+
+To also download the first-order time-derivative array (required for cDVGAN training):
+
+.. code-block:: python
+
+   paths = download_glitch_data("data/glitches/", include_derivatives=True)
+   # paths["derivatives"] → (35000, 8191)
+
 Data preparation
 ----------------
 

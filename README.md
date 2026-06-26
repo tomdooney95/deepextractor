@@ -75,6 +75,24 @@ Two pretrained variants are available:
 
 ---
 
+## Glitch reconstruction dataset
+
+A dataset of 35,000 DeepExtractor reconstructions across seven LIGO O3 glitch classes
+(Blip, Fast Scattering, Koi Fish, Low Frequency Burst, Scattered Light, Tomte, Whistle)
+is available on HuggingFace:
+[tomdooney/deepextractor-glitch-reconstructions](https://huggingface.co/datasets/tomdooney/deepextractor-glitch-reconstructions)
+
+```python
+from deepextractor.data import download_glitch_data
+
+paths = download_glitch_data("data/glitches/")
+# paths["samples"]     → (35000, 8192) whitened waveforms
+# paths["labels"]      → (35000, 7)   one-hot class labels
+# paths["label_order"] → class names in label-column order
+```
+
+---
+
 ## Bundled dataset
 
 The package ships a sample of the [GravitySpy LIGO O3a high-confidence catalogue](https://doi.org/10.5281/zenodo.1476551) at `assets/data_o3a_sample.csv` — 10 H1 examples per glitch class (17 classes, 170 rows total), SNR > 15.

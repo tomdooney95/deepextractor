@@ -1,6 +1,7 @@
 """PyTorch Dataset classes, preprocessing, and data-acquisition utilities."""
 
 from deepextractor.data.datasets import HDF5Dataset, SpectrogramDataset, TimeSeriesDataset
+from deepextractor.data.glitch_data import download_glitch_data
 from deepextractor.data.omicron import (
     O1_END,
     O1_START,
@@ -23,6 +24,7 @@ from deepextractor.data.preprocessing import ChannelStandardScaler
 
 __all__ = [
     "TimeSeriesDataset",
+    "download_glitch_data",
     "SpectrogramDataset",
     "HDF5Dataset",
     "ChannelStandardScaler",
