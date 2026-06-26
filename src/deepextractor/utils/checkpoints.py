@@ -92,7 +92,7 @@ def load_torch_model(model_name, model_dict, checkpoint_dir=None, device="cpu",
         model = model_dict[model_name].to(device)
         checkpoint_path = _resolve_checkpoint(model_name, checkpoint_dir, checkpoint_filename)
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint["state_dict"])
+        model.load_state_dict(checkpoint["state_dict"], strict=False)
         model.eval()
         logger.info(f"Successfully loaded model: {model_name}")
     except Exception as e:
