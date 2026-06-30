@@ -21,6 +21,7 @@ from deepextractor.utils.signal import (
     butter_filter,
     quality_factor_conversion,
     rescale,
+    snr_scaling,
     whitened_snr_scaling,
 )
 
@@ -32,6 +33,7 @@ __all__ = [
     "load_optimizer",
     "load_torch_model",
     "whitened_snr_scaling",
+    "snr_scaling",
     "butter_filter",
     "quality_factor_conversion",
     "rescale",

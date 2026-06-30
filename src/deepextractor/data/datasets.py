@@ -67,6 +67,73 @@ class SpectrogramDataset(Dataset):
         return input_ts, target_ts
 
 
+class HDF5ReconstructionDataset(Dataset):
+    """HDF5-backed dataset for single-detector glitch reconstruction.
+
+    Lazy-opens the HDF5 file per worker process. Use shuffle=False in DataLoader
+    for purely-simulated data — every sample is an independent random draw at
+    generation time, so storage order carries no structure to shuffle away.
+    For real (e.g. Omicron-derived) background data, shuffle sample order once
+    at generation time instead, since adjacent real samples can be highly
+    time-correlated.
+
+    Args:
+        hdf5_path: Path to the HDF5 file.
+        input_key: Dataset key for the noisy (background + glitch) input.
+        target_key: Dataset key for the target (e.g. clean background).
+        transform: Optional callable with signature
+            transform(input_ts=..., target_ts=...) → dict with same keys.
+    """
+
+    def __init__(self, hdf5_path, input_key, target_key, transform=None):
+        self.hdf5_path = hdf5_path
+        self.input_key = input_key
+        self.target_key = target_key
+        self.transform = transform
+        self._file = self._input = self._target = self._len = None
+
+    def _ensure_open(self):
+        if self._file is None:
+            self._file = h5py.File(self.hdf5_path, "r", swmr=True, libver="latest")
+            self._input = self._file[self.input_key]
+            self._target = self._file[self.target_key]
+            self._len = self._input.shape[0]
+
+    def __len__(self):
+        if self._len is None:
+            self._ensure_open()
+        return self._len
+
+    def __getitem__(self, index):
+        self._ensure_open()
+        x = torch.tensor(self._input[index], dtype=torch.float32)
+        y = torch.tensor(self._target[index], dtype=torch.float32)
+
+        if x.ndim == 1:
+            x = x.unsqueeze(0)
+        if y.ndim == 1:
+            y = y.unsqueeze(0)
+
+        if self.transform is not None:
+            aug = self.transform(input_ts=x, target_ts=y)
+            x, y = aug["input_ts"], aug["target_ts"]
+
+        return x, y
+
+    def __getstate__(self):
+        # HDF5 file handles cannot be pickled — close and reopen per worker
+        state = self.__dict__.copy()
+        state["_file"] = state["_input"] = state["_target"] = None
+        return state
+
+    def __del__(self):
+        try:
+            if self._file is not None:
+                self._file.close()
+        except Exception:
+            pass
+
+
 class HDF5Dataset(Dataset):
     """HDF5-backed dataset for time-domain two-detector signal/glitch separation.
 

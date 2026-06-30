@@ -39,6 +39,7 @@ dependencies = [
     "scipy>=1.11",
     "huggingface_hub>=0.20",
     "bilby>=2.0",
+    "h5py>=3.0",
 ]
 
 [project.optional-dependencies]

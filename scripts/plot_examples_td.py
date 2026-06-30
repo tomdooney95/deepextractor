@@ -44,8 +44,13 @@ T = 4.0
 LENGTH = int(T * SAMPLE_RATE)
 T_INJ = 3.5                        # glitch centred here (seconds) = merger time
 T_MIN, T_MAX = 0.125, 4.0
-SNR_SCALING_FACTOR_BILBY = 31.970149253731343
 TIME_AXIS = np.linspace(0, T, LENGTH, endpoint=False)
+
+# bilby's whitened_time_domain_strain is unit-variance; whitened_snr_scaling's
+# flat-PSD formula assumes the SAMPLE_RATE/2-variance convention. Previously
+# corrected with a fitted constant (31.970149253731343) that under-corrected
+# by ~40%; replaced with the exact analytic conversion.
+BILBY_SNR_NORM = np.sqrt(SAMPLE_RATE / 2)
 
 # Four real GW events used in the CIT notebook
 EVENTS = {
@@ -278,7 +283,7 @@ def inject_gengli_glitch(ex: dict, inject_h1: bool | None = None) -> dict:
     signal_injection = signal_injection - signal_injection.mean()
 
     # SNR-scale using bilby factor
-    snr_to_scale = min(ex["snr_h1"], ex["snr_l1"]) / SNR_SCALING_FACTOR_BILBY
+    snr_to_scale = min(ex["snr_h1"], ex["snr_l1"]) / BILBY_SNR_NORM
     glitch = whitened_snr_scaling(signal_injection, snr=snr_to_scale)
 
     # Inject at merger time
@@ -301,7 +306,7 @@ def inject_gengli_glitch(ex: dict, inject_h1: bool | None = None) -> dict:
         "glitchy_l1":    sig_bg_l1,
         "true_glitch_h1": glitch_h1,
         "true_glitch_l1": glitch_l1,
-        "glitch_snr":    snr_to_scale * SNR_SCALING_FACTOR_BILBY,
+        "glitch_snr":    snr_to_scale * BILBY_SNR_NORM,
     }
 
 

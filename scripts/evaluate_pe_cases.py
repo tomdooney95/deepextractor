@@ -56,8 +56,13 @@ SAMPLE_RATE = 4096
 T           = 4.0
 LENGTH      = int(T * SAMPLE_RATE)   # 16384
 T_INJ       = 3.5                    # merger time within the 4s window
-SNR_SCALING_FACTOR_BILBY = 31.970149253731343
 TIME_AXIS   = np.linspace(0, T, LENGTH, endpoint=False)
+
+# bilby's whitened_time_domain_strain is unit-variance; whitened_snr_scaling's
+# flat-PSD formula assumes the SAMPLE_RATE/2-variance convention. Previously
+# corrected with a fitted constant (31.970149253731343) that under-corrected
+# by ~40%; replaced with the exact analytic conversion.
+BILBY_SNR_NORM = np.sqrt(SAMPLE_RATE / 2)
 
 EVENTS = {
     # O1
@@ -281,7 +286,7 @@ def inject_gengli_glitch(ex: dict, inject_h1: bool | None = None) -> dict:
     raw_glitch = np.array(g.get_glitch()).squeeze()
     raw_glitch = raw_glitch - raw_glitch.mean()
 
-    glitch_snr = max(ex["snr_h1"], ex["snr_l1"]) / SNR_SCALING_FACTOR_BILBY
+    glitch_snr = max(ex["snr_h1"], ex["snr_l1"]) / BILBY_SNR_NORM
     glitch = whitened_snr_scaling(raw_glitch, snr=glitch_snr)
 
     glitchy_h1 = ex["whitened_data_h1"].copy()
@@ -300,7 +305,7 @@ def inject_gengli_glitch(ex: dict, inject_h1: bool | None = None) -> dict:
         "glitchy_l1":     glitchy_l1,
         "true_glitch_h1": glitchy_h1 - ex["whitened_data_h1"],
         "true_glitch_l1": glitchy_l1 - ex["whitened_data_l1"],
-        "glitch_snr":     glitch_snr * SNR_SCALING_FACTOR_BILBY,
+        "glitch_snr":     glitch_snr * BILBY_SNR_NORM,
     }
 
 

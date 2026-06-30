@@ -81,7 +81,6 @@ def _get_stft_params(model_name):
     return n_fft, hop_length, win_length, window
 
 
-from deepextractor.generation.generate_timeseries import SNR_SCALING_FACTOR_BILBY
 from deepextractor.utils.stft import apply_stft, apply_istft  # noqa: F401
 
 
@@ -130,7 +129,9 @@ def generate_glitch_data(signal_type, gaussian_noise_samples, signal_function_ma
         len_glitch = len(signal_injection)
         id_start = int((T_INJ * SAMPLE_RATE / LENGTH) * len(noise_sample)) - len_glitch // 2
         glitch = signal_injection - np.mean(signal_injection)
-        effective_snr = snr_to_scale / SNR_SCALING_FACTOR_BILBY if bilby_noise else snr_to_scale
+        # bilby's whitened_time_domain_strain is unit-variance; convert to the
+        # SAMPLE_RATE/2-variance convention whitened_snr_scaling assumes.
+        effective_snr = snr_to_scale / np.sqrt(SAMPLE_RATE / 2) if bilby_noise else snr_to_scale
         glitch = whitened_snr_scaling(glitch, snr=effective_snr)
         noisy_glitch[id_start : id_start + len_glitch] += glitch
         clean_glitch = noisy_glitch - background

@@ -2,15 +2,39 @@ import numpy as np
 from scipy.signal import butter, lfilter
 
 
+def snr_scaling(glitch, snr, srate=4096, psd=None):
+    """Scale a signal to a target optimal SNR.
+
+    Parameters
+    ----------
+    glitch : array_like
+        Time-domain signal(s) to scale (last axis is time).
+    snr : float or None
+        Target optimal SNR. ``None`` returns *glitch* unchanged.
+    srate : float
+        Sample rate in Hz.
+    psd : array_like or None
+        One-sided PSD Sn(f), evaluated at ``np.fft.rfftfreq(glitch.shape[-1], 1/srate)``.
+        ``None`` (default) assumes flat Sn(f)=1 — i.e. *glitch* is already in the
+        whitened frame, where the noise it will be injected into is also whitened.
+        Pass the detector PSD to scale a signal for injection into un-whitened
+        (coloured) strain instead.
+    """
+    glitch = np.asarray(glitch)
+    if snr is None:
+        return glitch
+    df = srate / glitch.shape[-1]
+    glitch_FD = np.fft.rfft(glitch, axis=-1) / srate
+    power = np.multiply(np.conj(glitch_FD), glitch_FD).real
+    if psd is not None:
+        power = power / np.asarray(psd)
+    true_sigma_sq = 4.0 * df * np.sum(power, axis=-1)
+    return (glitch.T * snr / np.sqrt(true_sigma_sq)).T
+
+
 def whitened_snr_scaling(glitch, snr, srate=4096):
     """Scale a glitch signal to the target SNR in the whitened frame."""
-    glitch = np.asarray(glitch)
-    if snr is not None:
-        df = srate / glitch.shape[-1]
-        glitch_FD = np.fft.rfft(glitch, axis=-1) / srate
-        true_sigma_sq = 4.0 * df * np.sum(np.multiply(np.conj(glitch_FD), glitch_FD), axis=-1).real
-        glitch = (glitch.T * snr / np.sqrt(true_sigma_sq)).T
-    return glitch
+    return snr_scaling(glitch, snr, srate=srate, psd=None)
 
 
 def quality_factor_conversion(Q, f_0):
