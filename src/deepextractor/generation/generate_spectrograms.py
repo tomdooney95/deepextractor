@@ -1,11 +1,20 @@
 """
-Convert time-domain .npy arrays to STFT spectrograms (magnitude + phase).
+Convert time-domain arrays to STFT spectrograms (magnitude + phase).
 
 Also provides a utility to concatenate chunked spectrogram files.
 
 Usage::
 
     deepextractor-specgen --input-dir data/pycbc_noise/time_domain/ --output-dir data/pycbc_noise/spectrogram_domain/
+
+    # HDF5 mode -- reads an HDF5 produced by generate_timeseries.py --format hdf5
+    # and writes spectrograms directly to HDF5 in chunks, never holding the full
+    # dataset in memory. Needed at 4s: the 2s case already needed ~132GB for the
+    # train spectrogram array alone, and the old np.save path's torch.cat step
+    # peaks at roughly 2x the final array size while assembling it.
+    deepextractor-specgen --format hdf5 \\
+        --input-h5 data_4s/bilby_noise_hdf5/time_domain/strain_data_scaled.h5 \\
+        --output-h5 data_4s/bilby_noise_hdf5/spectrogram_domain/spectrogram_data.h5
 
 """
 
@@ -14,6 +23,9 @@ import os
 
 import numpy as np
 import torch
+from tqdm import tqdm
+
+from deepextractor.utils.stft import apply_stft
 
 
 # Default STFT parameters (257x257 output shape)
@@ -62,6 +74,50 @@ def apply_stft_and_save(
     torch.cuda.empty_cache()
 
 
+def _generate_hdf5_spectrograms(args):
+    """Chunked HDF5 STFT generation.
+
+    Reads each dataset from an HDF5 file produced by
+    ``generate_timeseries.py --format hdf5`` and writes magnitude+phase
+    spectrograms straight to a new HDF5 file in chunks, via explicit
+    batch-aligned ``chunks=`` and no compression (matching the time-domain
+    HDF5 pipeline). Never holds a full array in memory -- needed since the
+    STFT representation is ~16x the size of the raw time series.
+
+    Note this mirrors the existing .npy path's semantics: it reads the
+    *already time-domain-scaled* dataset and computes STFT directly on
+    those values, so the spectrogram output needs no separate scaling step.
+    """
+    import h5py
+
+    window = torch.hann_window(args.win_length)
+    out_dir = os.path.dirname(args.output_h5)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    with h5py.File(args.input_h5, "r") as fin, h5py.File(args.output_h5, "w") as fout:
+        for key in fin.keys():
+            in_ds = fin[key]
+            n = in_ds.shape[0]
+
+            # Probe output shape/dtype from a single dummy window.
+            probe = apply_stft(
+                np.zeros((1, in_ds.shape[1]), dtype=np.float32),
+                args.n_fft, args.hop_length, args.win_length, window,
+            )
+            out_shape = (n, *probe.shape[1:])
+            chunks = (min(args.chunk_size, n), *probe.shape[1:])
+            out_ds = fout.create_dataset(key, shape=out_shape, dtype=np.float32, chunks=chunks)
+
+            for start in tqdm(range(0, n, args.chunk_size), desc=f"STFT {key}"):
+                end = min(start + args.chunk_size, n)
+                chunk = in_ds[start:end]
+                stft_chunk = apply_stft(chunk, args.n_fft, args.hop_length, args.win_length, window)
+                out_ds[start:end] = stft_chunk.numpy().astype(np.float32)
+
+    print(f"Saved spectrogram HDF5: {args.output_h5}")
+
+
 def load_and_concatenate_chunks(data_dir, base_filename, total_chunks):
     """Load and concatenate chunked numpy arrays saved as ``{base}_chunk_{i}.npy``."""
     stft_list = []
@@ -83,16 +139,27 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
+        "--format", choices=["npy", "hdf5"], default="npy",
+        help="'hdf5' reads/writes HDF5 in chunks, never holding the full "
+             "dataset in memory -- use for large/long-duration datasets.",
+    )
+    parser.add_argument(
         "--input-dir",
         type=str,
-        required=True,
-        help="Directory containing the time-domain .npy files.",
+        help="Directory containing the time-domain .npy files (--format npy).",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        required=True,
-        help="Directory to save the spectrogram .npy files.",
+        help="Directory to save the spectrogram .npy files (--format npy).",
+    )
+    parser.add_argument(
+        "--input-h5", type=str,
+        help="Path to the time-domain HDF5 file, e.g. strain_data_scaled.h5 (--format hdf5).",
+    )
+    parser.add_argument(
+        "--output-h5", type=str,
+        help="Path to write the spectrogram HDF5 file (--format hdf5).",
     )
     parser.add_argument("--n-fft", type=int, default=DEFAULT_N_FFT)
     parser.add_argument("--win-length", type=int, default=DEFAULT_WIN_LENGTH)
@@ -120,6 +187,15 @@ def main():
         help="Number of chunks for background_val (used with --combine-chunks).",
     )
     args = parser.parse_args()
+
+    if args.format == "hdf5":
+        if not args.input_h5 or not args.output_h5:
+            parser.error("--format hdf5 requires --input-h5 and --output-h5")
+        _generate_hdf5_spectrograms(args)
+        return
+
+    if not args.input_dir or not args.output_dir:
+        parser.error("--format npy requires --input-dir and --output-dir")
 
     os.makedirs(args.output_dir, exist_ok=True)
     window = torch.hann_window(args.win_length)
