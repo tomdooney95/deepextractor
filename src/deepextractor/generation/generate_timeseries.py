@@ -67,14 +67,20 @@ def generate_gaussian_noise(mean, std_dev, num_samples, sample_shape, bilby_nois
                 "bilby is required for bilby noise generation. "
                 "Install it with: pip install deepextractor[generative]"
             ) from e
+        # Build the interferometer once — set_strain_data_from_power_spectral_densities
+        # draws a fresh independent noise realisation on every call, so the ifo object
+        # can and should be reused across all samples. Constructing InterferometerList
+        # per-sample loads PSD calibration files from disk each time, which is
+        # catastrophically slow on networked cluster filesystems (NFS/ZFS-over-NFS).
+        ifos = bilby.gw.detector.InterferometerList([detector])
+        for ifo in ifos:
+            ifo.minimum_frequency = minimum_frequency
+
         gaussian_noise_samples = []
         iterator = range(num_samples)
         if show_progress:
             iterator = tqdm(iterator, desc="Generating bilby noise...")
         for i in iterator:
-            ifos = bilby.gw.detector.InterferometerList([detector])
-            for ifo in ifos:
-                ifo.minimum_frequency = minimum_frequency
             ifos.set_strain_data_from_power_spectral_densities(
                 sampling_frequency=sample_rate,
                 duration=duration,
