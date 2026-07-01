@@ -29,7 +29,10 @@ def snr_scaling(glitch, snr, srate=4096, psd=None):
     if psd is not None:
         power = power / np.asarray(psd)
     true_sigma_sq = 4.0 * df * np.sum(power, axis=-1)
-    return (glitch.T * snr / np.sqrt(true_sigma_sq)).T
+    # Guard against zero-energy inputs (e.g. constant waveform after mean subtraction).
+    # Injecting a zero-amplitude glitch is a no-op, so return zeros rather than ±inf.
+    scale = np.where(true_sigma_sq > 0, snr / np.sqrt(np.maximum(true_sigma_sq, 1e-300)), 0.0)
+    return (glitch.T * scale).T
 
 
 def whitened_snr_scaling(glitch, snr, srate=4096):
