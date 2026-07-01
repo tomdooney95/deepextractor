@@ -106,7 +106,14 @@ def _generate_hdf5_spectrograms(args):
                 args.n_fft, args.hop_length, args.win_length, window,
             )
             out_shape = (n, *probe.shape[1:])
-            chunks = (min(args.chunk_size, n), *probe.shape[1:])
+            # HDF5 enforces a hard 4GB-per-chunk limit. At 4s with default STFT params
+            # each spectrogram sample is ~1MB, so chunk_size=5000 → ~5.27GB — too large.
+            # Cap so chunks stay under 2GB (safe headroom, still large enough for efficient
+            # sequential writes and reads with shuffle=False DataLoaders).
+            per_sample_bytes = int(np.prod(probe.shape[1:])) * 4
+            max_chunk_n = max(1, (2 * 1024 ** 3) // per_sample_bytes)
+            chunk_n = min(args.chunk_size, n, max_chunk_n)
+            chunks = (chunk_n, *probe.shape[1:])
             out_ds = fout.create_dataset(key, shape=out_shape, dtype=np.float32, chunks=chunks)
 
             for start in tqdm(range(0, n, args.chunk_size), desc=f"STFT {key}"):
