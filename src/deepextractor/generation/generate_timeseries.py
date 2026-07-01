@@ -247,6 +247,102 @@ def generate_detector_noise(
     raise ValueError(f"Unknown backend '{backend}'. Choose 'bilby' or 'gwmock'.")
 
 
+def generate_network_noise(
+    n_samples: int,
+    detectors: list[str],
+    duration: float = T,
+    sample_rate: float = SAMPLE_RATE,
+    backend: str = "bilby",
+    minimum_frequency: float = MINIMUM_FREQUENCY,
+    psd_file: str | None = None,
+    show_progress: bool = True,
+    seed: int | None = None,
+) -> dict[str, np.ndarray]:
+    """Generate whitened noise simultaneously for a network of detectors.
+
+    Returns ``{detector_name: (n_samples, length) float32 array}`` — one
+    entry per detector, each unit-variance whitened, matching the convention
+    of :func:`generate_detector_noise`.
+
+    For the bilby backend a single
+    ``set_strain_data_from_power_spectral_densities`` call per sample sets
+    strain for the whole network at once, so this is more efficient than
+    calling :func:`generate_detector_noise` N times in a loop.
+
+    For the gwmock backend, detectors are currently generated independently
+    (each using the same ``psd_file``).  Physically correlated inter-detector
+    noise (e.g. Schumann resonances coupling ET arms) requires
+    ``CorrelatedNoiseSimulator`` from gwmock-noise and is planned for a
+    future update.
+
+    Args:
+        n_samples:          Number of noise realisations per detector.
+        detectors:          List of interferometer names, e.g. ``["H1", "L1"]``.
+                            For bilby: any name in bilby's built-in database.
+                            For gwmock: any label; noise shaped by ``psd_file``.
+        duration:           Window length in seconds.
+        sample_rate:        Sampling rate in Hz.
+        backend:            ``"bilby"`` (default) or ``"gwmock"``.
+        minimum_frequency:  Low-frequency cutoff in Hz.
+        psd_file:           Two-column (frequency, PSD) ASCII file.  Required
+                            for gwmock; optional for bilby.
+        show_progress:      Show a tqdm progress bar.
+        seed:               Optional random seed.
+    """
+    if not detectors:
+        raise ValueError("detectors must be a non-empty list.")
+
+    if backend == "bilby":
+        try:
+            import bilby
+        except ImportError as exc:
+            raise ImportError(
+                "bilby is required for the bilby backend. "
+                "Install with: pip install deepextractor[generative]"
+            ) from exc
+
+        bilby.core.utils.logger.setLevel("ERROR")
+        ifos = bilby.gw.detector.InterferometerList(detectors)
+        for ifo in ifos:
+            ifo.minimum_frequency = minimum_frequency
+            if psd_file is not None:
+                ifo.power_spectral_density = (
+                    bilby.gw.detector.PowerSpectralDensity(psd_file=psd_file)
+                )
+        if seed is not None:
+            bilby.core.utils.random.seed(seed)
+
+        samples: dict[str, list] = {ifo.name: [] for ifo in ifos}
+        iterator = range(n_samples)
+        if show_progress:
+            iterator = tqdm(iterator, desc=f"Generating bilby network noise {detectors}...")
+        for _ in iterator:
+            ifos.set_strain_data_from_power_spectral_densities(
+                sampling_frequency=sample_rate, duration=duration, start_time=0,
+            )
+            for ifo in ifos:
+                samples[ifo.name].append(
+                    np.asarray(ifo.whitened_time_domain_strain, dtype=np.float32)
+                )
+        return {det: np.array(samples[det], dtype=np.float32) for det in detectors}
+
+    if backend == "gwmock":
+        # Generate each detector independently with the same PSD file.
+        # For physically correlated multi-detector noise use
+        # gwmock-noise's CorrelatedNoiseSimulator directly.
+        results: dict[str, np.ndarray] = {}
+        for det in detectors:
+            results[det] = generate_detector_noise(
+                n_samples, detector=det, duration=duration, sample_rate=sample_rate,
+                backend=backend, minimum_frequency=minimum_frequency, psd_file=psd_file,
+                show_progress=show_progress, seed=seed,
+            )
+            seed = None  # don't reuse seed across detectors
+        return results
+
+    raise ValueError(f"Unknown backend '{backend}'. Choose 'bilby' or 'gwmock'.")
+
+
 def generate_synthetic_data(gaussian_noise_samples, bilby_noise=False, phase="train",
                              t_min=0.125, t_max=None, snr_min=SNR_MIN, snr_max=SNR_MAX,
                              sample_rate=SAMPLE_RATE, show_progress=True):
