@@ -43,34 +43,48 @@ SIGNAL_FUNCTION_MAP = {
 }
 
 
-def generate_gaussian_noise(mean, std_dev, num_samples, sample_shape, bilby_noise=False,
-                            sample_rate=SAMPLE_RATE, duration=T,
-                            minimum_frequency=MINIMUM_FREQUENCY, detector="L1"):
+def generate_gaussian_noise(mean, std_dev, num_samples, sample_shape):
     """Generate Gaussian noise samples (pycbc or bilby)."""
-    if bilby_noise:
-        try:
-            import bilby
-        except ImportError as e:
-            raise ImportError(
-                "bilby is required for bilby noise generation. "
-                "Install it with: pip install deepextractor[generative]"
-            ) from e
-        gaussian_noise_samples = []
-        for i in tqdm(range(num_samples), desc="Generating bilby noise..."):
-            ifos = bilby.gw.detector.InterferometerList([detector])
-            for ifo in ifos:
-                ifo.minimum_frequency = minimum_frequency
-            ifos.set_strain_data_from_power_spectral_densities(
-                sampling_frequency=sample_rate,
-                duration=duration,
-                start_time=0,
-            )
-            white_time_domain_strain = list(ifos[0].whitened_time_domain_strain)
-            gaussian_noise_samples.append(white_time_domain_strain)
-        return np.asarray(gaussian_noise_samples)
-    else:
-        print("Generating pycbc noise...")
-        return np.random.normal(loc=mean, scale=std_dev, size=(num_samples, *sample_shape))
+    print("Generating pycbc noise...")
+    return np.random.normal(loc=mean, scale=std_dev, size=(num_samples, *sample_shape))
+    
+
+def generate_gaussian_noise_for_bilby_network(num_samples, ifo_network, sample_rate=SAMPLE_RATE, 
+                                              duration=T, minimum_frequency=MINIMUM_FREQUENCY):
+    """
+    Generate Gaussian noise samples for a network of detectors using bilby. 
+    Returns a dictionary with detector names as keys and noise samples as values.
+    """
+    try:
+        import bilby
+    except ImportError as e:
+        raise ImportError(
+            "bilby is required for bilby noise generation. "
+            "Install it with: pip install deepextractor[generative]"
+        ) from e
+
+    print(f"Found {ifo_network.number_of_interferometers} interferometers in network: {[ifo.name for ifo in ifo_network]}")
+    
+    gaussian_noise_samples = {}
+    for ifo in ifo_network:
+        gaussian_noise_samples[ifo.name] = []
+
+    for i in tqdm(range(num_samples), desc="Generating bilby network noise..."):
+        for ifo in ifo_network:
+            ifo.minimum_frequency = minimum_frequency
+        ifo_network.set_strain_data_from_power_spectral_densities(
+            sampling_frequency=sample_rate,
+            duration=duration,
+            start_time=0,
+        )
+
+        for ifo in ifo_network:
+            white_time_domain_strain = list(ifo.whitened_time_domain_strain)
+            gaussian_noise_samples[ifo.name].append(white_time_domain_strain)
+
+    for ifo in ifo_network:
+        gaussian_noise_samples[ifo.name] = np.asarray(gaussian_noise_samples[ifo.name])
+    return gaussian_noise_samples
 
 
 def generate_synthetic_data(gaussian_noise_samples, bilby_noise=False, phase="train",
@@ -135,8 +149,25 @@ def main():
     mean = 0
     std_dev = np.sqrt(SAMPLE_RATE / 2)  # PyCBC convention: variance = SAMPLE_RATE / 2
 
-    train_noise = generate_gaussian_noise(mean, std_dev, args.num_train, (LENGTH,), bilby_noise)
-    val_noise = generate_gaussian_noise(mean, std_dev, args.num_val, (LENGTH,), bilby_noise)
+    if bilby_noise:
+        try:
+            import bilby
+        except ImportError as e:
+            raise ImportError(
+                "bilby is required for bilby noise generation. "
+                "Install it with: pip install deepextractor[generative]"
+            ) from e
+
+        ifo_network = bilby.gw.detector.InterferometerList(["H1", "L1", "V1"])
+        train_noise_dict = generate_gaussian_noise_for_bilby_network(args.num_train, ifo_network)
+        val_noise_dict = generate_gaussian_noise_for_bilby_network(args.num_val, ifo_network)
+
+        # For simplicity, we will use only L1 noise for training and validation
+        train_noise = train_noise_dict["L1"]
+        val_noise = val_noise_dict["L1"]
+    else:
+        train_noise = generate_gaussian_noise(mean, std_dev, args.num_train, (LENGTH,))
+        val_noise = generate_gaussian_noise(mean, std_dev, args.num_val, (LENGTH,))
 
     glitch_train, bg_train = generate_synthetic_data(train_noise, bilby_noise, "train")
     glitch_val, bg_val = generate_synthetic_data(val_noise, bilby_noise, "val")
