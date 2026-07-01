@@ -48,6 +48,12 @@ generative = [
     "tensorflow>=2.14",
     "gengli>=0.2",
 ]
+# gwmock-noise backend for realistic per-detector noise generation
+# Supports H1, L1, V1, ET1/2/3, CE, and any custom detector via PSD file.
+# See: https://github.com/Leuven-Gravity-Institute/gwmock-noise
+gwmock = [
+    "gwmock-noise>=0.1",
+]
 # Developer tools
 dev = [
     "pytest>=8",
