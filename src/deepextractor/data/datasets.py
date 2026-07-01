@@ -70,34 +70,61 @@ class SpectrogramDataset(Dataset):
 class HDF5ReconstructionDataset(Dataset):
     """HDF5-backed dataset for single-detector glitch reconstruction.
 
-    Lazy-opens the HDF5 file per worker process. Use shuffle=False in DataLoader
-    for purely-simulated data — every sample is an independent random draw at
-    generation time, so storage order carries no structure to shuffle away.
-    For real (e.g. Omicron-derived) background data, shuffle sample order once
-    at generation time instead, since adjacent real samples can be highly
-    time-correlated.
+    Supports two layouts produced by ``deepextractor-specgen --format hdf5``:
+
+    * **Per-key files** (default): ``input_h5`` and ``target_h5`` are separate
+      ``.h5`` files each containing a single ``"data"`` dataset — the layout
+      written by the current spectrogram pipeline to avoid filesystem per-file
+      size limits on LIGO CIT.
+    * **Single-file** (legacy): pass ``hdf5_path`` plus ``input_key`` /
+      ``target_key`` to read two datasets from one file.
+
+    Use ``shuffle=False`` in DataLoader for purely-simulated data — every
+    sample is an independent random draw, so storage order carries no
+    structure to shuffle away.  For real background data, shuffle once at
+    generation time instead (adjacent real samples can be time-correlated).
 
     Args:
-        hdf5_path: Path to the HDF5 file.
-        input_key: Dataset key for the noisy (background + glitch) input.
-        target_key: Dataset key for the target (e.g. clean background).
-        transform: Optional callable with signature
-            transform(input_ts=..., target_ts=...) → dict with same keys.
+        input_h5:   Path to the input HDF5 file (``"data"`` key).
+        target_h5:  Path to the target HDF5 file (``"data"`` key).
+        hdf5_path:  Legacy — single file containing both datasets.
+        input_key:  Legacy — dataset key for input within ``hdf5_path``.
+        target_key: Legacy — dataset key for target within ``hdf5_path``.
+        transform:  Optional callable ``transform(input_ts=..., target_ts=...) → dict``.
     """
 
-    def __init__(self, hdf5_path, input_key, target_key, transform=None):
-        self.hdf5_path = hdf5_path
-        self.input_key = input_key
-        self.target_key = target_key
+    def __init__(self, input_h5=None, target_h5=None,
+                 hdf5_path=None, input_key="data", target_key="data",
+                 transform=None):
+        if input_h5 is not None and target_h5 is not None:
+            # Per-key file layout (new default)
+            self._input_path  = input_h5
+            self._target_path = target_h5
+            self._input_key   = "data"
+            self._target_key  = "data"
+            self._shared_file = False
+        elif hdf5_path is not None:
+            # Legacy single-file layout
+            self._input_path  = hdf5_path
+            self._target_path = hdf5_path
+            self._input_key   = input_key
+            self._target_key  = target_key
+            self._shared_file = True
+        else:
+            raise ValueError("Provide either (input_h5, target_h5) or hdf5_path.")
+
         self.transform = transform
-        self._file = self._input = self._target = self._len = None
+        self._in_file = self._tgt_file = None
+        self._input = self._target = self._len = None
 
     def _ensure_open(self):
-        if self._file is None:
-            self._file = h5py.File(self.hdf5_path, "r", swmr=True, libver="latest")
-            self._input = self._file[self.input_key]
-            self._target = self._file[self.target_key]
-            self._len = self._input.shape[0]
+        if self._in_file is None:
+            self._in_file  = h5py.File(self._input_path,  "r", swmr=True, libver="latest")
+            self._tgt_file = (self._in_file if self._shared_file
+                              else h5py.File(self._target_path, "r", swmr=True, libver="latest"))
+            self._input  = self._in_file[self._input_key]
+            self._target = self._tgt_file[self._target_key]
+            self._len    = self._input.shape[0]
 
     def __len__(self):
         if self._len is None:
@@ -106,30 +133,28 @@ class HDF5ReconstructionDataset(Dataset):
 
     def __getitem__(self, index):
         self._ensure_open()
-        x = torch.tensor(self._input[index], dtype=torch.float32)
+        x = torch.tensor(self._input[index],  dtype=torch.float32)
         y = torch.tensor(self._target[index], dtype=torch.float32)
-
         if x.ndim == 1:
             x = x.unsqueeze(0)
         if y.ndim == 1:
             y = y.unsqueeze(0)
-
         if self.transform is not None:
             aug = self.transform(input_ts=x, target_ts=y)
             x, y = aug["input_ts"], aug["target_ts"]
-
         return x, y
 
     def __getstate__(self):
-        # HDF5 file handles cannot be pickled — close and reopen per worker
         state = self.__dict__.copy()
-        state["_file"] = state["_input"] = state["_target"] = None
+        state["_in_file"] = state["_tgt_file"] = state["_input"] = state["_target"] = None
         return state
 
     def __del__(self):
         try:
-            if self._file is not None:
-                self._file.close()
+            if self._in_file is not None:
+                self._in_file.close()
+            if not self._shared_file and self._tgt_file is not None:
+                self._tgt_file.close()
         except Exception:
             pass
 

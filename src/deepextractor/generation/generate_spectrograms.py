@@ -8,13 +8,12 @@ Usage::
     deepextractor-specgen --input-dir data/pycbc_noise/time_domain/ --output-dir data/pycbc_noise/spectrogram_domain/
 
     # HDF5 mode -- reads an HDF5 produced by generate_timeseries.py --format hdf5
-    # and writes spectrograms directly to HDF5 in chunks, never holding the full
-    # dataset in memory. Needed at 4s: the 2s case already needed ~132GB for the
-    # train spectrogram array alone, and the old np.save path's torch.cat step
-    # peaks at roughly 2x the final array size while assembling it.
+    # and writes one spectrogram HDF5 file per dataset key into --output-dir.
+    # Splitting across files avoids the ~512 GB per-file hard limit on LIGO CIT.
+    # Safe to re-run after a partial failure — completed files are skipped.
     deepextractor-specgen --format hdf5 \\
         --input-h5 data_4s/bilby_noise_hdf5/time_domain/strain_data_scaled.h5 \\
-        --output-h5 data_4s/bilby_noise_hdf5/spectrogram_domain/spectrogram_data.h5
+        --output-dir data_4s/bilby_noise_hdf5/spectrogram_domain/
 
 """
 
@@ -75,54 +74,59 @@ def apply_stft_and_save(
 
 
 def _generate_hdf5_spectrograms(args):
-    """Chunked HDF5 STFT generation.
+    """Chunked HDF5 STFT generation — one file per dataset key.
 
-    Reads each dataset from an HDF5 file produced by
-    ``generate_timeseries.py --format hdf5`` and writes magnitude+phase
-    spectrograms straight to a new HDF5 file in chunks, via explicit
-    batch-aligned ``chunks=`` and no compression (matching the time-domain
-    HDF5 pipeline). Never holds a full array in memory -- needed since the
-    STFT representation is ~16x the size of the raw time series.
-
-    Note this mirrors the existing .npy path's semantics: it reads the
-    *already time-domain-scaled* dataset and computes STFT directly on
-    those values, so the spectrogram output needs no separate scaling step.
+    Writes each key from the input HDF5 to its own output file
+    ({output_dir}/{key}.h5) to avoid filesystem per-file size limits
+    (~512 GB on LIGO CIT). Each output file contains a single "data"
+    dataset of shape (N, 2, F, T). Skips keys whose output file already
+    exists and is complete — safe to re-run after a partial failure.
     """
     import h5py
 
     window = torch.hann_window(args.win_length)
-    out_dir = os.path.dirname(args.output_h5)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
 
-    with h5py.File(args.input_h5, "r") as fin, h5py.File(args.output_h5, "w") as fout:
+    with h5py.File(args.input_h5, "r") as fin:
         for key in fin.keys():
+            out_path = os.path.join(args.output_dir, f"{key}.h5")
             in_ds = fin[key]
             n = in_ds.shape[0]
 
-            # Probe output shape/dtype from a single dummy window.
+            # Resume support: skip if output file already exists and is complete.
+            if os.path.exists(out_path):
+                try:
+                    with h5py.File(out_path, "r") as fcheck:
+                        if "data" in fcheck and fcheck["data"].shape[0] == n:
+                            print(f"Skipping {key} — {out_path} already complete ({n} samples).")
+                            continue
+                except Exception:
+                    pass
+                print(f"Re-generating {key} — {out_path} exists but is incomplete or corrupt.")
+
+            # Probe output shape from a single dummy sample.
             probe = apply_stft(
                 np.zeros((1, in_ds.shape[1]), dtype=np.float32),
                 args.n_fft, args.hop_length, args.win_length, window,
             )
             out_shape = (n, *probe.shape[1:])
-            # HDF5 enforces a hard 4GB-per-chunk limit. At 4s with default STFT params
-            # each spectrogram sample is ~1MB, so chunk_size=5000 → ~5.27GB — too large.
-            # Cap so chunks stay under 2GB (safe headroom, still large enough for efficient
-            # sequential writes and reads with shuffle=False DataLoaders).
+            # HDF5 hard limit: 4 GB per chunk. At 4s defaults each spectrogram
+            # sample is ~1 MB, so cap chunk_n so chunks stay under 2 GB.
             per_sample_bytes = int(np.prod(probe.shape[1:])) * 4
             max_chunk_n = max(1, (2 * 1024 ** 3) // per_sample_bytes)
             chunk_n = min(args.chunk_size, n, max_chunk_n)
             chunks = (chunk_n, *probe.shape[1:])
-            out_ds = fout.create_dataset(key, shape=out_shape, dtype=np.float32, chunks=chunks)
 
-            for start in tqdm(range(0, n, args.chunk_size), desc=f"STFT {key}"):
-                end = min(start + args.chunk_size, n)
-                chunk = in_ds[start:end]
-                stft_chunk = apply_stft(chunk, args.n_fft, args.hop_length, args.win_length, window)
-                out_ds[start:end] = stft_chunk.numpy().astype(np.float32)
+            with h5py.File(out_path, "w") as fout:
+                out_ds = fout.create_dataset("data", shape=out_shape, dtype=np.float32, chunks=chunks)
+                for start in tqdm(range(0, n, args.chunk_size), desc=f"STFT {key}"):
+                    end = min(start + args.chunk_size, n)
+                    stft_chunk = apply_stft(
+                        in_ds[start:end], args.n_fft, args.hop_length, args.win_length, window,
+                    )
+                    out_ds[start:end] = stft_chunk.numpy().astype(np.float32)
 
-    print(f"Saved spectrogram HDF5: {args.output_h5}")
+            print(f"Saved {out_path}  shape={out_shape}")
 
 
 def load_and_concatenate_chunks(data_dir, base_filename, total_chunks):
@@ -164,10 +168,6 @@ def main():
         "--input-h5", type=str,
         help="Path to the time-domain HDF5 file, e.g. strain_data_scaled.h5 (--format hdf5).",
     )
-    parser.add_argument(
-        "--output-h5", type=str,
-        help="Path to write the spectrogram HDF5 file (--format hdf5).",
-    )
     parser.add_argument("--n-fft", type=int, default=DEFAULT_N_FFT)
     parser.add_argument("--win-length", type=int, default=DEFAULT_WIN_LENGTH)
     parser.add_argument("--hop-length", type=int, default=DEFAULT_HOP_LENGTH)
@@ -196,8 +196,8 @@ def main():
     args = parser.parse_args()
 
     if args.format == "hdf5":
-        if not args.input_h5 or not args.output_h5:
-            parser.error("--format hdf5 requires --input-h5 and --output-h5")
+        if not args.input_h5 or not args.output_dir:
+            parser.error("--format hdf5 requires --input-h5 and --output-dir")
         _generate_hdf5_spectrograms(args)
         return
 
