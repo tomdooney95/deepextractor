@@ -90,6 +90,14 @@ def main():
              "Expects noisy_glitch_train.h5, background_train.h5, etc.",
     )
     parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=2,
+        help="Number of batches pre-loaded per DataLoader worker. "
+             "Increase to hide NFS I/O latency (e.g. 4 or 8). "
+             "Ignored when --num-workers is 0.",
+    )
+    parser.add_argument(
         "--checkpoint-dir",
         type=Path,
         default=Path("checkpoints"),
@@ -167,7 +175,7 @@ def main():
             num_workers=args.num_workers,
             pin_memory=True,
             persistent_workers=args.num_workers > 0,
-            prefetch_factor=2 if args.num_workers > 0 else None,
+            prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         )
         train_loader = DataLoader(train_ds, **loader_kwargs)
         val_loader   = DataLoader(val_ds,   **loader_kwargs)
