@@ -26,6 +26,9 @@ from deepextractor.models.architectures import (
     UNET1D,
     UNET2D,
 )
+from torch.utils.data import DataLoader
+
+from deepextractor.data.datasets import HDF5ReconstructionDataset
 from deepextractor.training.train_fn import train_fn
 from deepextractor.utils.checkpoints import load_checkpoint, load_optimizer, save_checkpoint
 from deepextractor.utils.io import check_accuracy, get_loaders
@@ -71,8 +74,20 @@ def main():
     parser.add_argument(
         "--data-dir",
         type=Path,
-        required=True,
-        help="Directory containing the training .npy arrays.",
+        default=None,
+        help="Directory containing the training .npy arrays (--format npy).",
+    )
+    parser.add_argument(
+        "--hdf5",
+        action="store_true",
+        help="Load data from per-key HDF5 files produced by deepextractor-specgen --format hdf5.",
+    )
+    parser.add_argument(
+        "--spec-dir",
+        type=Path,
+        default=None,
+        help="Directory containing per-key spectrogram HDF5 files (--hdf5 mode). "
+             "Expects noisy_glitch_train.h5, background_train.h5, etc.",
     )
     parser.add_argument(
         "--checkpoint-dir",
@@ -134,32 +149,50 @@ def main():
         os.makedirs(d, exist_ok=True)
 
     # --- Data loaders ---
-    data_dir = args.data_dir
-    if args.time_domain:
+    if args.hdf5:
+        if args.spec_dir is None:
+            parser.error("--hdf5 requires --spec-dir")
+        spec_dir = args.spec_dir
+        train_ds = HDF5ReconstructionDataset(
+            input_h5=str(spec_dir / "noisy_glitch_train.h5"),
+            target_h5=str(spec_dir / "background_train.h5"),
+        )
+        val_ds = HDF5ReconstructionDataset(
+            input_h5=str(spec_dir / "noisy_glitch_val.h5"),
+            target_h5=str(spec_dir / "background_val.h5"),
+        )
+        loader_kwargs = dict(
+            batch_size=args.batch_size,
+            shuffle=False,           # data pre-shuffled at generation time
+            num_workers=args.num_workers,
+            pin_memory=True,
+            persistent_workers=args.num_workers > 0,
+            prefetch_factor=2 if args.num_workers > 0 else None,
+        )
+        train_loader = DataLoader(train_ds, **loader_kwargs)
+        val_loader   = DataLoader(val_ds,   **loader_kwargs)
+    elif args.time_domain:
+        if args.data_dir is None:
+            parser.error("--time-domain requires --data-dir")
+        data_dir = args.data_dir
         train_loader, val_loader = get_loaders(
             str(data_dir / "glitch_train_scaled.npy"),
             str(data_dir / "background_train_scaled.npy"),
             str(data_dir / "glitch_val_scaled.npy"),
             str(data_dir / "background_val_scaled.npy"),
-            args.batch_size,
-            None,
-            None,
-            args.num_workers,
-            True,
-            time_domain=True,
+            args.batch_size, None, None, args.num_workers, True, time_domain=True,
         )
     else:
+        if args.data_dir is None:
+            parser.error("--data-dir is required unless --hdf5 is set")
+        data_dir = args.data_dir
         train_loader, val_loader = get_loaders(
             str(data_dir / "glitch_train_scaled_mag_phase.npy"),
             str(data_dir / "background_train_scaled_mag_phase.npy"),
             str(data_dir / "glitch_val_scaled_mag_phase.npy"),
             str(data_dir / "background_val_scaled_mag_phase.npy"),
-            batch_size=args.batch_size,
-            train_transform=None,
-            val_transform=None,
-            num_workers=args.num_workers,
-            pin_memory=True,
-            time_domain=False,
+            batch_size=args.batch_size, train_transform=None, val_transform=None,
+            num_workers=args.num_workers, pin_memory=True, time_domain=False,
         )
 
     # --- Optimizer and scheduler ---
