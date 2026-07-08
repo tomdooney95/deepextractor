@@ -349,7 +349,7 @@ class Autoencoder1D(nn.Module):
 
 
 class DoubleConv2D(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, dropout_p=0.0):
         super(DoubleConv2D, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
@@ -359,29 +359,39 @@ class DoubleConv2D(nn.Module):
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )
+        # Dropout applied after the conv block so Sequential indices are unchanged
+        # — existing checkpoints load cleanly (Dropout2d has no weights/buffers).
+        self.dropout = nn.Dropout2d(dropout_p) if dropout_p > 0.0 else None
 
     def forward(self, x):
-        return self.conv(x)
+        x = self.conv(x)
+        if self.dropout is not None:
+            x = self.dropout(x)
+        return x
 
 
 class UNET2D(nn.Module):
-    def __init__(self, in_channels=2, out_channels=2, features=[64, 128, 256, 512]):
+    def __init__(self, in_channels=2, out_channels=2, features=[64, 128, 256, 512],
+                 dropout_p=0.0):
         super(UNET2D, self).__init__()
         self.ups = nn.ModuleList()
         self.downs = nn.ModuleList()
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
+        # Encoder — no dropout; learns stable feature detectors.
         for feature in features:
-            self.downs.append(DoubleConv2D(in_channels, feature))
+            self.downs.append(DoubleConv2D(in_channels, feature, dropout_p=0.0))
             in_channels = feature
 
+        # Decoder — dropout applied here and at the bottleneck so uncertainty
+        # propagates through the full reconstruction path.
         for feature in reversed(features):
             self.ups.append(
                 nn.ConvTranspose2d(feature * 2, feature, kernel_size=2, stride=2)
             )
-            self.ups.append(DoubleConv2D(feature * 2, feature))
+            self.ups.append(DoubleConv2D(feature * 2, feature, dropout_p=dropout_p))
 
-        self.bottleneck = DoubleConv2D(features[-1], features[-1] * 2)
+        self.bottleneck = DoubleConv2D(features[-1], features[-1] * 2, dropout_p=dropout_p)
         self.final_conv = nn.Conv2d(features[0], out_channels, kernel_size=1)
 
     def forward(self, x):

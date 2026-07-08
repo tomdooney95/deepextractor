@@ -64,6 +64,13 @@ def main():
     )
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=150)
+    parser.add_argument(
+        "--dropout-p", type=float, default=0.0,
+        help="Dropout probability for MC Dropout uncertainty estimation. "
+             "Applied to the bottleneck and decoder DoubleConv2D blocks. "
+             "0.0 (default) = no dropout, matches existing behaviour. "
+             "Typical values: 0.1–0.2. Requires retraining from scratch.",
+    )
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument(
@@ -144,8 +151,18 @@ def main():
 
     # --- Model ---
     model_name = args.model
-    model = MODEL_REGISTRY[model_name]().to(device)
-    logger.info(f"Training {model_name} on {device}")
+    _unet2d_names = {
+        "UNET2D", "UNET2D_glitch_target", "DeepExtractor_65",
+        "DeepExtractor_129", "DeepExtractor_257",
+    }
+    if model_name in _unet2d_names:
+        model = UNET2D(in_channels=2, out_channels=2, dropout_p=args.dropout_p).to(device)
+    else:
+        model = MODEL_REGISTRY[model_name]().to(device)
+    if args.dropout_p > 0.0:
+        logger.info(f"Training {model_name} on {device} with MC Dropout p={args.dropout_p}")
+    else:
+        logger.info(f"Training {model_name} on {device}")
 
     # --- Directories ---
     noise_ext = "bilby_noise" if args.bilby_noise else "pycbc_noise"
