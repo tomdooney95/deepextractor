@@ -122,6 +122,16 @@ def main():
         help="Resume from an existing checkpoint (transfer learning).",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume an interrupted training run from the last saved checkpoint. "
+             "Loads weights, optimizer state, and epoch number so losses are "
+             "written to the same directory with a new epoch range suffix — "
+             "concatenate the resulting .npy files to get the full loss history. "
+             "Unlike --transfer-learn, directory names and checkpoint filenames "
+             "are unchanged.",
+    )
+    parser.add_argument(
         "--bilby-noise",
         action="store_true",
         help="Use bilby noise suffix in checkpoint filenames.",
@@ -226,11 +236,28 @@ def main():
     scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.1, patience=4)
 
     start_epoch = 0
-    if args.transfer_learn:
+    if args.resume:
+        # Resume interrupted training: same directories, same checkpoint naming.
+        # Losses will be saved with a new epoch-range suffix so the files from
+        # before and after the interruption can be concatenated later.
+        checkpoint_path = model_checkpoint_dir / f"checkpoint_best_{noise_ext}_base.pth.tar"
+        try:
+            logger.info(f"Resuming from {checkpoint_path} ...")
+            checkpoint = torch.load(str(checkpoint_path), map_location=device)
+            load_checkpoint(checkpoint, model)
+            load_optimizer(checkpoint, optimizer)
+            if "scheduler" in checkpoint:
+                scheduler.load_state_dict(checkpoint["scheduler"])
+            start_epoch = checkpoint.get("epoch", 0) + 1
+            logger.info(f"Resuming from epoch {start_epoch}")
+        except Exception as e:
+            logger.error(f"Failed to load checkpoint for resume: {e}")
+            return
+    elif args.transfer_learn:
         checkpoint_path = model_checkpoint_dir / "checkpoint_best.pth.tar"
         try:
             logger.info("Loading model checkpoint...")
-            checkpoint = torch.load(str(checkpoint_path))
+            checkpoint = torch.load(str(checkpoint_path), map_location=device)
             load_checkpoint(checkpoint, model)
             load_optimizer(checkpoint, optimizer)
             start_epoch = checkpoint.get("epoch", start_epoch)
