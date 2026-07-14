@@ -56,6 +56,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from deepextractor.data.datasets import HDF5ReconstructionDataset
+from torch.utils.data import TensorDataset
 from deepextractor.generation.generate_timeseries import generate_synthetic_data
 from deepextractor.models.architectures import UNET2D
 from deepextractor.training.train_fn import train_fn
@@ -305,6 +306,15 @@ def _save_losses(loss_dir, start_epoch, end_epoch,
             np.array(val_constraint_losses))
 
 
+def _load_stft_to_tensor(h5_path: Path) -> torch.Tensor:
+    """Read the full HDF5 'data' dataset into a float32 CPU tensor."""
+    with h5py.File(h5_path, "r") as f:
+        arr = f["data"][:]
+    gb = arr.nbytes / 1e9
+    logger.info(f"  Loaded {h5_path.name}: {arr.shape}  [{gb:.1f} GB]")
+    return torch.tensor(arr, dtype=torch.float32)
+
+
 def phase3_train(
     spec_dir: Path,
     pretrained_checkpoint: Path,
@@ -319,17 +329,31 @@ def phase3_train(
     prefetch_factor: int = 2,
     early_stopping_patience: int = 9,
     dropout_p: float = 0.0,
+    in_memory: bool = False,
 ) -> None:
     model_name = "DeepExtractor_257"
 
-    train_ds = HDF5ReconstructionDataset(
-        input_h5=str(spec_dir / "noisy_glitch_train.h5"),
-        target_h5=str(spec_dir / "background_train.h5"),
-    )
-    val_ds = HDF5ReconstructionDataset(
-        input_h5=str(spec_dir / "noisy_glitch_val.h5"),
-        target_h5=str(spec_dir / "background_val.h5"),
-    )
+    if in_memory:
+        logger.info("Loading all STFT data into memory ...")
+        train_ds = TensorDataset(
+            _load_stft_to_tensor(spec_dir / "noisy_glitch_train.h5"),
+            _load_stft_to_tensor(spec_dir / "background_train.h5"),
+        )
+        val_ds = TensorDataset(
+            _load_stft_to_tensor(spec_dir / "noisy_glitch_val.h5"),
+            _load_stft_to_tensor(spec_dir / "background_val.h5"),
+        )
+        # Data is already in RAM — workers only add IPC overhead
+        num_workers = 0
+    else:
+        train_ds = HDF5ReconstructionDataset(
+            input_h5=str(spec_dir / "noisy_glitch_train.h5"),
+            target_h5=str(spec_dir / "background_train.h5"),
+        )
+        val_ds = HDF5ReconstructionDataset(
+            input_h5=str(spec_dir / "noisy_glitch_val.h5"),
+            target_h5=str(spec_dir / "background_val.h5"),
+        )
     logger.info(f"Dataset — train: {len(train_ds)}  val: {len(val_ds)}")
 
     loader_kwargs = dict(
@@ -450,8 +474,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-workers",               type=int,   default=4)
     p.add_argument("--prefetch-factor",           type=int,   default=2)
     p.add_argument("--early-stopping-patience",   type=int,   default=9)
-    p.add_argument("--dropout-p",                 type=float, default=0.0)
-    p.add_argument("--device",                    default=None)
+    p.add_argument("--dropout-p",  type=float, default=0.0)
+    p.add_argument("--in-memory", action="store_true",
+                   help="Load all STFT data into RAM before training. Fastest option "
+                        "when the node has enough memory (~1 MB per sample). "
+                        "num-workers is forced to 0 (no benefit with in-memory data).")
+    p.add_argument("--device",    default=None)
     return p.parse_args()
 
 
@@ -517,6 +545,7 @@ def main() -> None:
         prefetch_factor=args.prefetch_factor,
         early_stopping_patience=args.early_stopping_patience,
         dropout_p=args.dropout_p,
+        in_memory=args.in_memory,
     )
 
 
