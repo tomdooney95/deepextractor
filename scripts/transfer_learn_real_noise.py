@@ -343,8 +343,6 @@ def phase3_train(
             _load_stft_to_tensor(spec_dir / "noisy_glitch_val.h5"),
             _load_stft_to_tensor(spec_dir / "background_val.h5"),
         )
-        # Data is already in RAM — workers only add IPC overhead
-        num_workers = 0
     else:
         train_ds = HDF5ReconstructionDataset(
             input_h5=str(spec_dir / "noisy_glitch_train.h5"),
