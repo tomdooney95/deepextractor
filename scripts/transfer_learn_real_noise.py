@@ -134,6 +134,80 @@ def chronological_split(
     return arr[:n_train], arr[n_train:]
 
 
+# ── In-memory injection ───────────────────────────────────────────────────────
+
+def inject_in_memory(
+    train_4s: np.ndarray,
+    val_4s: np.ndarray,
+    batch_size: int = 1000,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, StandardScaler]:
+    """
+    Inject glitches in-memory (batched to avoid peak RAM) and fit a scaler.
+
+    Returns (train_noisy, train_bg, val_noisy, val_bg, scaler).
+    """
+    def _inject(arr, phase):
+        noisy_parts, bg_parts = [], []
+        for start in tqdm(range(0, len(arr), batch_size), desc=f"Injecting ({phase})"):
+            batch = arr[start : start + batch_size].copy().astype(np.float32)
+            n, b = generate_synthetic_data(batch, bilby_noise=False, phase=phase,
+                                           show_progress=False)
+            noisy_parts.append(n.astype(np.float32))
+            bg_parts.append(b.astype(np.float32))
+        return np.concatenate(noisy_parts), np.concatenate(bg_parts)
+
+    train_noisy, train_bg = _inject(train_4s, "train")
+    val_noisy,   val_bg   = _inject(val_4s,   "val")
+
+    logger.info("Fitting StandardScaler on noisy train ...")
+    scaler = StandardScaler()
+    scaler.fit(train_noisy.reshape(-1, 1))
+
+    return train_noisy, train_bg, val_noisy, val_bg, scaler
+
+
+class RealNoiseInMemoryDataset(Dataset):
+    """
+    Holds (noisy, background) time-domain arrays in RAM and computes STFT on-the-fly.
+
+    On Linux/macOS the numpy arrays are shared copy-on-write across DataLoader
+    worker processes (forked), so memory overhead with num_workers > 0 is small.
+    """
+
+    def __init__(
+        self,
+        noisy: np.ndarray,
+        background: np.ndarray,
+        scaler_mean: float,
+        scaler_scale: float,
+        n_fft: int,
+        hop_length: int,
+        win_length: int,
+    ):
+        self.noisy = noisy
+        self.background = background
+        self.scaler_mean = scaler_mean
+        self.scaler_scale = scaler_scale
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.win_length = win_length
+        self.window = torch.hann_window(win_length)
+
+    def __len__(self) -> int:
+        return len(self.noisy)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        noisy = (self.noisy[idx] - self.scaler_mean) / self.scaler_scale
+        bg    = (self.background[idx] - self.scaler_mean) / self.scaler_scale
+        noisy_stft = apply_stft(
+            noisy[np.newaxis], self.n_fft, self.hop_length, self.win_length, self.window
+        ).squeeze(0)
+        bg_stft = apply_stft(
+            bg[np.newaxis], self.n_fft, self.hop_length, self.win_length, self.window
+        ).squeeze(0)
+        return noisy_stft, bg_stft
+
+
 # ── HDF5 generation ───────────────────────────────────────────────────────────
 
 def inject_and_write_hdf5(
@@ -319,8 +393,16 @@ def parse_args() -> argparse.Namespace:
         help="Directory to write generated time-domain HDF5 files.",
     )
     p.add_argument(
+        "--in-memory", action="store_true",
+        help="Skip HDF5 entirely: inject glitches into RAM, keep all data in memory. "
+             "Simpler and faster to start, but requires enough RAM to hold the full "
+             "dataset (time-domain only — STFT is always computed on-the-fly). "
+             "Good default for O3. Use HDF5 mode for O4b-scale datasets (>50k samples).",
+    )
+    p.add_argument(
         "--no-regen", action="store_true",
-        help="Skip HDF5 generation if train.h5 and val.h5 already exist in --hdf5-dir.",
+        help="(HDF5 mode only) Skip HDF5 generation if train.h5 and val.h5 already "
+             "exist in --hdf5-dir.",
     )
     p.add_argument(
         "--checkpoint-dir", type=Path, default=Path("checkpoints_tl"),
@@ -398,34 +480,55 @@ def main() -> None:
     train_combined = train_combined[rng.permutation(len(train_combined))]
     logger.info(f"Combined train: {len(train_combined)}  val: {len(val_combined)}  (4s)")
 
-    # ── HDF5 generation ────────────────────────────────────────────────────────
-    train_h5 = args.hdf5_dir / "train.h5"
-    val_h5   = args.hdf5_dir / "val.h5"
-    scaler_path = args.hdf5_dir / "scaler_real.pkl"
-
-    if args.no_regen and train_h5.exists() and val_h5.exists() and scaler_path.exists():
-        logger.info("--no-regen: loading existing HDF5 and scaler")
-        with open(scaler_path, "rb") as fh:
-            scaler = pickle.load(fh)
-    else:
-        scaler = inject_and_write_hdf5(
-            train_combined, val_combined, args.hdf5_dir, args.injection_batch_size,
-        )
-
-    scaler_mean  = float(scaler.mean_[0])
-    scaler_scale = float(scaler.scale_[0])
-    logger.info(f"Scaler: mean={scaler_mean:.6f}  scale={scaler_scale:.6f}")
-
-    # ── Datasets + DataLoaders ────────────────────────────────────────────────
+    # ── Injection + dataset construction ──────────────────────────────────────
     dataset_kwargs = dict(
-        scaler_mean=scaler_mean,
-        scaler_scale=scaler_scale,
         n_fft=N_FFT,
         hop_length=HOP_LENGTH,
         win_length=WIN_LENGTH,
     )
-    train_ds = RealNoiseHDF5Dataset(str(train_h5), **dataset_kwargs)
-    val_ds   = RealNoiseHDF5Dataset(str(val_h5),   **dataset_kwargs)
+
+    if args.in_memory:
+        n_samples = len(train_combined) + len(val_combined)
+        est_gb = n_samples * LEN_4S * 4 * 2 / 1e9
+        logger.info(f"In-memory mode: estimated peak RAM for time-domain arrays ≈ {est_gb:.1f} GB")
+
+        train_noisy, train_bg, val_noisy, val_bg, scaler = inject_in_memory(
+            train_combined, val_combined, args.injection_batch_size,
+        )
+        scaler_mean  = float(scaler.mean_[0])
+        scaler_scale = float(scaler.scale_[0])
+        logger.info(f"Scaler: mean={scaler_mean:.6f}  scale={scaler_scale:.6f}")
+
+        train_ds = RealNoiseInMemoryDataset(
+            train_noisy, train_bg, scaler_mean, scaler_scale, **dataset_kwargs
+        )
+        val_ds = RealNoiseInMemoryDataset(
+            val_noisy, val_bg, scaler_mean, scaler_scale, **dataset_kwargs
+        )
+    else:
+        train_h5    = args.hdf5_dir / "train.h5"
+        val_h5      = args.hdf5_dir / "val.h5"
+        scaler_path = args.hdf5_dir / "scaler_real.pkl"
+
+        if args.no_regen and train_h5.exists() and val_h5.exists() and scaler_path.exists():
+            logger.info("--no-regen: loading existing HDF5 and scaler")
+            with open(scaler_path, "rb") as fh:
+                scaler = pickle.load(fh)
+        else:
+            scaler = inject_and_write_hdf5(
+                train_combined, val_combined, args.hdf5_dir, args.injection_batch_size,
+            )
+
+        scaler_mean  = float(scaler.mean_[0])
+        scaler_scale = float(scaler.scale_[0])
+        logger.info(f"Scaler: mean={scaler_mean:.6f}  scale={scaler_scale:.6f}")
+
+        train_ds = RealNoiseHDF5Dataset(
+            str(train_h5), scaler_mean, scaler_scale, **dataset_kwargs
+        )
+        val_ds = RealNoiseHDF5Dataset(
+            str(val_h5), scaler_mean, scaler_scale, **dataset_kwargs
+        )
     logger.info(f"Dataset sizes — train: {len(train_ds)}  val: {len(val_ds)}")
 
     loader_kwargs = dict(
