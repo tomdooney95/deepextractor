@@ -99,14 +99,22 @@ def mc_predict(
     >>> std    = samples.std(dim=0)    # uncertainty map over time
     >>> lo, hi = samples.quantile(torch.tensor([0.05, 0.95]), dim=0)
     """
-    # Collect all raw model outputs first, then post-process in one batched call.
-    # For iSTFT this is faster than applying it per-pass in the loop because
-    # the full (n_passes * N) batch is processed in a single kernel launch.
-    raw = torch.stack([model(x) for _ in range(n_passes)], dim=0)  # (P, N, ...)
+    # Batch all passes into a single forward call: repeat the input n_passes times
+    # along the batch dimension so each copy gets an independent dropout mask.
+    # This is much faster than n_passes sequential calls — one kernel launch
+    # instead of n_passes, and the GPU/CPU can parallelise across the batch.
+    # BatchNorm stays in eval mode (uses running stats) so batch size doesn't
+    # affect the normalisation; Dropout2d in train mode samples independently
+    # per batch element, giving us n_passes distinct stochastic reconstructions.
+    N = x.shape[0]
+    x_rep = x.repeat(n_passes, 1, 1, 1)          # (P*N, C, F, T)
+    raw_flat = model(x_rep)                        # (P*N, C, F, T)
+    # Restore (P, N, C, F, T): repeat tiles [s0,s1,...,s0,s1,...] so we permute
+    raw = raw_flat.view(n_passes, N, *raw_flat.shape[1:])
 
     if postprocess_fn is not None:
-        P, N = raw.shape[0], raw.shape[1]
-        merged = raw.view(P * N, *raw.shape[2:])           # (P*N, 2, F, T)
+        P = raw.shape[0]
+        merged = raw.view(P * N, *raw.shape[2:])           # (P*N, C, F, T)
         processed = postprocess_fn(merged)                  # (P*N, L)
         samples = processed.view(P, N, *processed.shape[1:])  # (P, N, L)
     else:
