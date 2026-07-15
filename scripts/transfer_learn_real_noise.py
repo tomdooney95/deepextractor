@@ -486,6 +486,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--prefetch-factor",           type=int,   default=2)
     p.add_argument("--early-stopping-patience",   type=int,   default=9)
     p.add_argument("--dropout-p",  type=float, default=0.0)
+    p.add_argument("--skip-train", action="store_true",
+                   help="Run phases 1 and 2 only (data prep + STFT), then exit. "
+                        "Useful for inspecting data before committing to training.")
     p.add_argument("--resume", action="store_true",
                    help="Resume from the existing TL checkpoint, restoring optimizer "
                         "and scheduler state. Skips phases 1 and 2 automatically.")
@@ -544,6 +547,10 @@ def main() -> None:
         )
 
     # ── Phase 3: train ────────────────────────────────────────────────────────
+    if args.skip_train:
+        logger.info("--skip-train set: phases 1 and 2 complete, exiting before training.")
+        return
+
     logger.info("Phase 3: training ...")
     phase3_train(
         spec_dir=args.spec_dir,
