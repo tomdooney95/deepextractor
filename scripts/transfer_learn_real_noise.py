@@ -185,7 +185,7 @@ def phase1_prepare(
                 end = min(start + injection_batch, n_total)
                 batch = noise_4s[start:end].copy().astype(np.float32)
                 noisy, bg = generate_synthetic_data(
-                    batch, bilby_noise=False, phase=split_name, show_progress=False,
+                    batch, bilby_noise=True, phase=split_name, show_progress=False,
                 )
                 n_written = noisy.shape[0]
                 ng_ds.resize(wptr + n_written, axis=0)
