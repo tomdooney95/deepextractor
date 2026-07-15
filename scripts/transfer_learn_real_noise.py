@@ -233,6 +233,7 @@ def phase2_specgen(
     td_dir: Path,
     spec_dir: Path,
     chunk_size: int = 2000,
+    force: bool = False,
 ) -> None:
     """
     Compute STFTs from the scaled time-domain HDF5 and write one file per key.
@@ -253,7 +254,7 @@ def phase2_specgen(
             in_ds = fin[key]
             n = in_ds.shape[0]
 
-            if out_path.exists():
+            if out_path.exists() and not force:
                 try:
                     with h5py.File(out_path, "r") as fcheck:
                         if "data" in fcheck and fcheck["data"].shape[0] == n:
@@ -544,6 +545,7 @@ def main() -> None:
             td_dir=args.td_dir,
             spec_dir=args.spec_dir,
             chunk_size=args.specgen_chunk,
+            force=args.redo_specgen,
         )
 
     # ── Phase 3: train ────────────────────────────────────────────────────────
