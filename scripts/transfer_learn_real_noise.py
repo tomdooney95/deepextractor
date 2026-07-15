@@ -60,7 +60,7 @@ from torch.utils.data import TensorDataset
 from deepextractor.generation.generate_timeseries import generate_synthetic_data
 from deepextractor.models.architectures import UNET2D
 from deepextractor.training.train_fn import train_fn
-from deepextractor.utils.checkpoints import load_checkpoint, save_checkpoint
+from deepextractor.utils.checkpoints import load_checkpoint, load_optimizer, save_checkpoint
 from deepextractor.utils.io import check_accuracy
 from deepextractor.utils.stft import apply_stft
 
@@ -330,6 +330,7 @@ def phase3_train(
     early_stopping_patience: int = 9,
     dropout_p: float = 0.0,
     in_memory: bool = False,
+    resume: bool = False,
 ) -> None:
     model_name = "DeepExtractor_257"
 
@@ -365,10 +366,6 @@ def phase3_train(
     val_loader   = DataLoader(val_ds,   shuffle=False, **loader_kwargs)
 
     model = UNET2D(in_channels=2, out_channels=2, dropout_p=dropout_p).to(device)
-    logger.info(f"Loading pretrained checkpoint: {pretrained_checkpoint}")
-    ckpt = torch.load(str(pretrained_checkpoint), map_location=device)
-    load_checkpoint(ckpt, model)
-
     loss_fn   = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.1, patience=4)
@@ -377,14 +374,30 @@ def phase3_train(
         else torch.amp.GradScaler("cpu")
     )
 
-    ckpt_path = ckpt_dir / f"checkpoint_best_{label}_tl.pth.tar"
+    ckpt_path   = ckpt_dir / f"checkpoint_best_{label}_tl.pth.tar"
+    start_epoch = 0
+
+    if resume and ckpt_path.exists():
+        logger.info(f"Resuming from {ckpt_path} ...")
+        saved = torch.load(str(ckpt_path), map_location=device)
+        load_checkpoint(saved, model)
+        load_optimizer(saved, optimizer)
+        if "scheduler" in saved:
+            scheduler.load_state_dict(saved["scheduler"])
+        start_epoch = saved.get("epoch", 0) + 1
+        logger.info(f"Resuming from epoch {start_epoch}")
+    else:
+        logger.info(f"Loading pretrained checkpoint: {pretrained_checkpoint}")
+        ckpt = torch.load(str(pretrained_checkpoint), map_location=device)
+        load_checkpoint(ckpt, model)
+
     train_losses, train_noise_losses, train_constraint_losses = [], [], []
     val_losses,   val_noise_losses,   val_constraint_losses   = [], [], []
     best_val = float("inf")
     no_improve = 0
 
-    for epoch in range(epochs):
-        logger.info(f"Epoch {epoch + 1}/{epochs}")
+    for epoch in range(start_epoch, start_epoch + epochs):
+        logger.info(f"Epoch {epoch + 1}/{start_epoch + epochs}")
         tr_loss, tr_noise, tr_constr = train_fn(
             train_loader, model, model_name, optimizer, loss_fn, amp_scaler, device
         )
@@ -473,6 +486,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--prefetch-factor",           type=int,   default=2)
     p.add_argument("--early-stopping-patience",   type=int,   default=9)
     p.add_argument("--dropout-p",  type=float, default=0.0)
+    p.add_argument("--resume", action="store_true",
+                   help="Resume from the existing TL checkpoint, restoring optimizer "
+                        "and scheduler state. Skips phases 1 and 2 automatically.")
     p.add_argument("--in-memory", action="store_true",
                    help="Load all STFT data into RAM before training. Fastest option "
                         "when the node has enough memory (~1 MB per sample). "
@@ -544,6 +560,7 @@ def main() -> None:
         early_stopping_patience=args.early_stopping_patience,
         dropout_p=args.dropout_p,
         in_memory=args.in_memory,
+        resume=args.resume,
     )
 
 
