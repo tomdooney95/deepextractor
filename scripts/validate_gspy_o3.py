@@ -27,12 +27,12 @@ Dependencies
 ------------
 Install deepextractor itself plus every runtime dependency GravitySpy needs, then
 install GravitySpy separately with --no-deps (its PyPI metadata pins broken
-scipy/keras versions) and apply five small patches for Python 3.11+ / keras 3.x /
-gwpy 4.x compatibility:
+scipy/keras versions) and apply six small patches for Python 3.11+ / keras 3.x /
+gwpy 4.x / matplotlib 3.3+ compatibility:
 
     pip install -e ".[gspy]"                   # deepextractor + gravityspy runtime deps
     pip install gravityspy==1.0.0 --no-deps    # gravityspy (skip its broken scipy pin)
-    python patch_gspy.py                       # apply the 5 compatibility patches below
+    python patch_gspy.py                       # apply the 6 compatibility patches below
 
 `patch_gspy.py` (repo root) applies these fixes directly to the installed package:
 
@@ -49,6 +49,8 @@ gwpy 4.x compatibility:
     # Fix 5: keras.utils.np_utils removed (Keras 1/2-only name). Imported
     # transitively via gravityspy.table.Events even when only classify() is used.
     from keras.utils import np_utils  →  shim built on tensorflow.keras.utils.to_categorical
+    # Fix 6: matplotlib >=3.3 renamed LogScale's basex/basey kwargs to base
+    ax.set_yscale('log', basey=2)  →  ax.set_yscale('log', base=2)
 
 --data-source cit additionally needs gwdatafind (pip install -e ".[site]"), and only
 works on a LIGO Data Grid machine (e.g. CIT) with datafind + frame access configured.

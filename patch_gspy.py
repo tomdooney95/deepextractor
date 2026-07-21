@@ -37,4 +37,10 @@ f.write_text(f.read_text().replace(
     'class np_utils:\n'
     '    to_categorical = staticmethod(_to_categorical)'))
 
+# Fix 6: matplotlib >=3.3 renamed LogScale's basex/basey kwargs to base.
+# gravityspy/plot/plot.py still calls set_yscale('log', basey=2) in two places
+# (per-class Q-scan plots + the summary grid), both hit during every classify().
+f = sp / 'plot/plot.py'
+f.write_text(f.read_text().replace("basey=2", "base=2"))
+
 print('All patches applied')
