@@ -19,4 +19,17 @@ f.write_text(f.read_text().replace(
     '    if timeseries:\n',
     '    if timeseries is not None:\n'))
 
+# Fix 4: keras.utils.np_utils removed (Keras 1/2-only name). train_classifier.py
+# is imported transitively via gravityspy.table.Events even when only classify()
+# is used, so this import runs unconditionally regardless of whether make_model()
+# is ever called. to_categorical's behavior is unchanged across Keras versions,
+# so plain tensorflow.keras (not tf_keras) is fine here — unlike Fix 2, there's no
+# legacy .h5-loading concern.
+f = sp / 'ml/train_classifier.py'
+f.write_text(f.read_text().replace(
+    'from keras.utils import np_utils',
+    'from tensorflow.keras.utils import to_categorical as _to_categorical\n'
+    'class np_utils:\n'
+    '    to_categorical = staticmethod(_to_categorical)'))
+
 print('All patches applied')
