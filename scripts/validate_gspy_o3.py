@@ -27,12 +27,12 @@ Dependencies
 ------------
 Install deepextractor itself plus every runtime dependency GravitySpy needs, then
 install GravitySpy separately with --no-deps (its PyPI metadata pins broken
-scipy/keras versions) and apply seven small patches for Python 3.11+ / keras 3.x /
+scipy/keras versions) and apply nine small patches for Python 3.11+ / keras 3.x /
 gwpy 4.x / matplotlib 3.3+ / numpy>=1.24 / scikit-image compatibility:
 
     pip install -e ".[gspy]"                   # deepextractor + gravityspy runtime deps
     pip install gravityspy==1.0.0 --no-deps    # gravityspy (skip its broken scipy pin)
-    python patch_gspy.py                       # apply the 7 compatibility patches below
+    python patch_gspy.py                       # apply the 9 compatibility patches below
 
 `patch_gspy.py` (repo root) applies these fixes directly to the installed package:
 
@@ -56,6 +56,14 @@ gwpy 4.x / matplotlib 3.3+ / numpy>=1.24 / scikit-image compatibility:
     rescale(..., multichannel=False)  →  rescale(..., channel_axis=None)
     rescale(..., multichannel=True)   →  rescale(..., channel_axis=-1)
     np.int(...)  →  int(...)
+    # Fix 8: ml/__init__.py and ml/GS_utils.py import bare keras (Keras 3.x
+    # standalone) instead of tensorflow.keras. Both run unconditionally on any
+    # gravityspy.ml import — GS_utils via train_classifier's own import (Fix 5).
+    from keras import backend as K  →  from tensorflow.keras import backend as K
+    (+ regularizers.l2, models.Sequential, layers.{Dense,Dropout,...} in GS_utils.py)
+    # Fix 9: predict_proba() removed from Keras models entirely — replaced by
+    # predict(), which returns probabilities directly for classification outputs.
+    final_model.predict_proba(...)  →  final_model.predict(...)
 
 --data-source cit additionally needs gwdatafind (pip install -e ".[site]"), and only
 works on a LIGO Data Grid machine (e.g. CIT) with datafind + frame access configured.
