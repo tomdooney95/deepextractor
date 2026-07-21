@@ -43,4 +43,18 @@ f.write_text(f.read_text().replace(
 f = sp / 'plot/plot.py'
 f.write_text(f.read_text().replace("basey=2", "base=2"))
 
+# Fix 7: gravityspy/ml/read_image.py predates numpy>=1.24 and scikit-image's
+# rescale() API change — skimage renamed multichannel=bool to channel_axis
+# (None = single-channel, -1 = channel on the last axis), and np.int (a bare
+# alias for the builtin int) was removed from numpy entirely. Both functions
+# (read_gray, read_rgb) are hit depending on GravitySpy's configured image mode.
+f = sp / 'ml/read_image.py'
+txt = f.read_text()
+txt = txt.replace("preserve_range='True', multichannel=False",
+                  "preserve_range=True, channel_axis=None")
+txt = txt.replace("preserve_range='True', multichannel=True",
+                  "preserve_range=True, channel_axis=-1")
+txt = txt.replace("np.int(", "int(")
+f.write_text(txt)
+
 print('All patches applied')
