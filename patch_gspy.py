@@ -15,11 +15,16 @@ txt = txt.replace('from keras import backend as K',
 f.write_text(txt)
 
 f = sp / 'utils/utils.py'
-f.write_text(f.read_text().replace(
-    '    if timeseries:\n',
-    '    if timeseries is not None:\n'))
+txt = f.read_text()
+txt = txt.replace('    if timeseries:\n',
+                  '    if timeseries is not None:\n')
+# Fix 4: gwpy 4.x's Series.crop() dropped the (long-unused) verbose kwarg
+# entirely — passing it at all raises TypeError, even verbose=False.
+txt = txt.replace('data = timeseries.crop(start_time, stop_time, verbose=verbose)',
+                  'data = timeseries.crop(start_time, stop_time)')
+f.write_text(txt)
 
-# Fix 4: keras.utils.np_utils removed (Keras 1/2-only name). train_classifier.py
+# Fix 5: keras.utils.np_utils removed (Keras 1/2-only name). train_classifier.py
 # is imported transitively via gravityspy.table.Events even when only classify()
 # is used, so this import runs unconditionally regardless of whether make_model()
 # is ever called. to_categorical's behavior is unchanged across Keras versions,
