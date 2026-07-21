@@ -105,12 +105,13 @@ MAX_AMP        = 30.0      # clip threshold on whitened strain
 # as get_clean_backgrounds.py, reads via gwdatafind instead of the public GWOSC API.
 FRAME_TYPE     = {"H1": "H1_HOFT_C00", "L1": "L1_HOFT_C00"}
 
-# Default clean O3b GPS centres, only used when --run-label O3 and no
-# --clean-gps-h1/--clean-gps-l1 override is given. Other run labels (e.g. O4)
-# must pass clean GPS centres explicitly — an O3 quiet segment is not a valid
-# injection background for an O4-era model.
+# Default clean O3b GPS centre for H1, only used when --run-label O3, --ifo H1,
+# and no --clean-gps-h1 override is given. This segment was vetted quiet for H1
+# specifically (source: gspy_classification.ipynb) — it is NOT verified clean for
+# L1, so there is no equivalent L1 default. Other run labels (e.g. O4) must pass
+# a clean GPS centre explicitly — an O3 quiet segment is not a valid injection
+# background for an O4-era model either.
 DEFAULT_CLEAN_GPS_H1 = 1262540000
-DEFAULT_CLEAN_GPS_L1 = 1262540000
 
 LABEL_ORDER = [
     "Blip", "Fast_Scattering", "Koi_Fish",
@@ -337,6 +338,11 @@ def main():
     parser.add_argument("--csv",           nargs="+", default=None,
                         help="High-confidence GravitySpy CSV(s) to sample from. "
                              "Defaults to the O3a+O3b CSVs when --run-label O3, otherwise required.")
+    parser.add_argument("--ifo",           choices=["H1", "L1"], default="H1",
+                        help="Only sample glitches from this IFO. There is exactly one clean "
+                             "injection background per run, vetted quiet for one specific IFO — "
+                             "using it for the other IFO's glitches would inject into an "
+                             "unverified (possibly not actually clean) segment.")
     parser.add_argument("--checkpoint",    required=True)
     parser.add_argument("--scaler",        required=True)
     parser.add_argument("--gspy-model",    default=None,
@@ -349,11 +355,12 @@ def main():
                              "files (H1_HOFT_C00/L1_HOFT_C00) — much faster per-glitch, but only "
                              "works on LIGO Data Grid machines like CIT.")
     parser.add_argument("--clean-gps-h1",  type=float, default=None,
-                        help="GPS centre of a clean H1 noise segment for injection. "
-                             "Defaults to an O3b quiet segment when --run-label O3, otherwise required.")
+                        help="GPS centre of a clean H1 noise segment for injection. Required "
+                             "when --ifo H1, unless --run-label O3 (uses the vetted H1 default).")
     parser.add_argument("--clean-gps-l1",  type=float, default=None,
-                        help="GPS centre of a clean L1 noise segment for injection. "
-                             "Defaults to an O3b quiet segment when --run-label O3, otherwise required.")
+                        help="GPS centre of a clean L1 noise segment for injection. Required "
+                             "when --ifo L1 — there is no default (no L1 segment has been "
+                             "vetted quiet yet).")
     parser.add_argument("--output-dir",    default="evaluation/gspy_4s_o3")
     parser.add_argument("--n-per-class",   type=int,   default=10)
     parser.add_argument("--n-passes",      type=int,   default=50)
@@ -370,22 +377,19 @@ def main():
     if args.run_label == "O3":
         if args.csv is None:
             args.csv = ["data_o3a_high_confidence.csv", "data_o3b_high_confidence.csv"]
-        if args.clean_gps_h1 is None:
+        if args.ifo == "H1" and args.clean_gps_h1 is None:
             args.clean_gps_h1 = DEFAULT_CLEAN_GPS_H1
-        if args.clean_gps_l1 is None:
-            args.clean_gps_l1 = DEFAULT_CLEAN_GPS_L1
-    else:
-        required = []
-        if not args.gspy_only:
-            required.append(("--csv", args.csv))
-        needs_clean_gps = args.gspy_only or not args.skip_gspy
-        if needs_clean_gps:
-            required += [("--clean-gps-h1", args.clean_gps_h1), ("--clean-gps-l1", args.clean_gps_l1)]
-        missing = [name for name, val in required if val is None]
-        if missing:
+    elif args.csv is None and not args.gspy_only:
+        parser.error(f"--run-label {args.run_label} requires --csv (no default outside O3).")
+
+    needs_clean_gps = args.gspy_only or not args.skip_gspy
+    if needs_clean_gps:
+        clean_gps_arg = "--clean-gps-h1" if args.ifo == "H1" else "--clean-gps-l1"
+        clean_gps_val = args.clean_gps_h1 if args.ifo == "H1" else args.clean_gps_l1
+        if clean_gps_val is None:
             parser.error(
-                f"--run-label {args.run_label} requires {', '.join(missing)} "
-                f"(no defaults outside O3)."
+                f"{clean_gps_arg} is required for --ifo {args.ifo} "
+                f"(the only built-in default, DEFAULT_CLEAN_GPS_H1, is H1-only and O3-only)."
             )
 
     if args.gspy_model is None and not args.skip_gspy:
@@ -414,16 +418,20 @@ def main():
             )
         ]
         print(f"Loaded {len(records)} residuals from {residuals_path}")
-        # Still need clean backgrounds for injection
-        print("\nFetching clean injection backgrounds...")
-        clean_gps = {"H1": args.clean_gps_h1, "L1": args.clean_gps_l1}
-        ifos_needed = {r["ifo"] for r in records}
-        clean_bg = {}
-        for ifo in sorted(ifos_needed):
-            bg_white, _central_4s, bg_t0 = _fetch_whitened(
-                ifo, clean_gps[ifo], data_source=args.data_source
+        stale_ifos = {r["ifo"] for r in records} - {args.ifo}
+        if stale_ifos:
+            raise ValueError(
+                f"{residuals_path} contains residuals for {stale_ifos}, but --ifo is "
+                f"{args.ifo!r} — the saved clean-GPS backgrounds only apply to one IFO. "
+                f"Re-run without --gspy-only to regenerate residuals for --ifo {args.ifo}."
             )
-            clean_bg[ifo] = (bg_white, bg_t0, clean_gps[ifo])
+        # Still need the clean background for injection
+        print("\nFetching clean injection background...")
+        clean_gps = {"H1": args.clean_gps_h1, "L1": args.clean_gps_l1}[args.ifo]
+        bg_white, _central_4s, bg_t0 = _fetch_whitened(
+            args.ifo, clean_gps, data_source=args.data_source
+        )
+        clean_bg = {args.ifo: (bg_white, bg_t0, clean_gps)}
         # Jump straight to GravitySpy
         _run_gspy(records, clean_bg, args)
         return
@@ -433,7 +441,7 @@ def main():
     df = pd.concat([pd.read_csv(p) for p in args.csv], ignore_index=True)
     df = df[
         df["label"].isin(LABEL_ORDER)
-        & df["ifo"].isin(["H1", "L1"])
+        & (df["ifo"] == args.ifo)
         & (df["snr"] >= args.min_snr)
     ].reset_index(drop=True)
 
@@ -521,15 +529,11 @@ def main():
         print("Skipping GravitySpy (--skip-gspy).")
         return
 
-    print("\nFetching clean injection backgrounds...")
-    clean_gps = {"H1": args.clean_gps_h1, "L1": args.clean_gps_l1}
-    ifos_needed = {r["ifo"] for r in records}
-    clean_bg = {}
-    for ifo in sorted(ifos_needed):
-        gps_c = clean_gps[ifo]
-        print(f"  {ifo} @ GPS {gps_c}")
-        bg_white, _central_4s, bg_t0 = _fetch_whitened(ifo, gps_c, data_source=args.data_source)
-        clean_bg[ifo] = (bg_white, bg_t0, gps_c)
+    print("\nFetching clean injection background...")
+    gps_c = {"H1": args.clean_gps_h1, "L1": args.clean_gps_l1}[args.ifo]
+    print(f"  {args.ifo} @ GPS {gps_c}")
+    bg_white, _central_4s, bg_t0 = _fetch_whitened(args.ifo, gps_c, data_source=args.data_source)
+    clean_bg = {args.ifo: (bg_white, bg_t0, gps_c)}
 
     _run_gspy(records, clean_bg, args)
 
