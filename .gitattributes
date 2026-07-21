@@ -1,10 +1,9 @@
 # Pretrained model weights are hosted on Hugging Face Hub (tomdooney/deepextractor).
 # They are downloaded automatically on first use and cached locally in pretrained/.
 # Do NOT track pretrained/ in git — add it to .gitignore instead.
-
 # Track bundled data assets with git-lfs
 assets/*.pkl            filter=lfs diff=lfs merge=lfs -text
 assets/cdvgan/**        filter=lfs diff=lfs merge=lfs -text
-
 # Strip notebook outputs automatically on commit
 *.ipynb filter=nbstripout
+data_*_high_confidence.csv filter=lfs diff=lfs merge=lfs -text
