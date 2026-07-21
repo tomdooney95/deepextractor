@@ -65,9 +65,26 @@ docs = [
     "nbsphinx>=0.9",
     "ipykernel",
 ]
-# LIGO site cluster tools — only installable at LHO/LLO
+# LIGO Data Grid cluster tools — only installable at LHO/LLO/CIT etc.
 site = [
     "gwtrigfind",
+    "gwdatafind",
+]
+# GravitySpy classification validation (scripts/validate_gspy_o3.py) —
+# core deps + every runtime dependency gravityspy needs. gravityspy itself is
+# NOT listed here — its PyPI metadata pins broken scipy/keras versions, so it
+# must be installed separately with --no-deps and then patched; see the
+# Dependencies section in scripts/validate_gspy_o3.py for the full steps.
+gspy = [
+    "deepextractor[generative]",
+    "seaborn>=0.13",
+    "tf-keras>=2.16",
+    "scikit-image>=0.19",
+    "sqlalchemy>=1.4",
+    "tables>=3.0",
+    "panoptes-client>=1.0",
+    "umap-learn>=0.5",
+    "ipywidgets>=8.0",
 ]
 # Full install
 all = ["deepextractor[generative,dev,docs]"]

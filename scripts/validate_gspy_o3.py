@@ -23,9 +23,30 @@ Outputs (in --output-dir):
     gspy_results.csv           — per-sample GravitySpy classification results
     confusion_matrix.pdf/png   — confusion matrix
 
-Requires gravityspy (patched per gspy_classification.ipynb) and deepextractor both
-importable. Run in the cdvgan conda env; if deepextractor is not installed there:
-    pip install -e /path/to/deepextractor
+Dependencies
+------------
+Install deepextractor itself plus every runtime dependency GravitySpy needs, then
+install GravitySpy separately with --no-deps (its PyPI metadata pins broken
+scipy/keras versions) and apply three small patches for Python 3.11 / keras 3.x
+compatibility:
+
+    pip install -e ".[gspy]"                   # deepextractor + gravityspy runtime deps
+    pip install gravityspy==1.0.0 --no-deps    # gravityspy (skip its broken scipy pin)
+    python patch_gspy.py                       # apply the 3 compatibility patches below
+
+`patch_gspy.py` (repo root) applies these fixes directly to the installed package:
+
+    # Fix 1: scipy.misc.imresize removed in scipy 1.3
+    from scipy.misc import imresize  →  from skimage.transform import resize as imresize
+    # Fix 2: keras 3.x loads old .h5 models incorrectly — use tf_keras (legacy keras 2.x)
+    from keras.applications.vgg16 import preprocess_input  →  from tf_keras...
+    from keras.models import load_model                    →  from tf_keras...
+    from keras import backend as K                         →  from tf_keras...
+    # Fix 3: gwpy 4.0 rejects bare truthiness checks on TimeSeries
+    if timeseries:  →  if timeseries is not None:
+
+--data-source cit additionally needs gwdatafind (pip install -e ".[site]"), and only
+works on a LIGO Data Grid machine (e.g. CIT) with datafind + frame access configured.
 
 Usage::
 
