@@ -354,6 +354,11 @@ def _run_gspy(records, clean_bg, args):
                 path_to_cnn=args.gspy_model,
                 timeseries=ts,
                 plot_directory=gspy_tmp,
+                # ts is already gwpy-whitened (see _fetch_whitened). NOTE: as of the
+                # installed gravityspy, this kwarg is currently a no-op — make_q_scans
+                # hardcodes whiten=True directly in its q_transform() calls and never
+                # reads a 'whiten' key out of **kwargs. Left here to document intent.
+                whiten=False,
             )
             pred = result["ml_label"].value[0]
             conf = float(result["ml_confidence"].value[0])
