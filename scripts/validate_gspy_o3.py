@@ -27,12 +27,12 @@ Dependencies
 ------------
 Install deepextractor itself plus every runtime dependency GravitySpy needs, then
 install GravitySpy separately with --no-deps (its PyPI metadata pins broken
-scipy/keras versions) and apply nine small patches for Python 3.11+ / keras 3.x /
+scipy/keras versions) and apply ten small patches for Python 3.11+ / keras 3.x /
 gwpy 4.x / matplotlib 3.3+ / numpy>=1.24 / scikit-image compatibility:
 
     pip install -e ".[gspy]"                   # deepextractor + gravityspy runtime deps
     pip install gravityspy==1.0.0 --no-deps    # gravityspy (skip its broken scipy pin)
-    python patch_gspy.py                       # apply the 9 compatibility patches below
+    python patch_gspy.py                       # apply the 10 compatibility patches below
 
 `patch_gspy.py` (repo root) applies these fixes directly to the installed package:
 
@@ -64,6 +64,12 @@ gwpy 4.x / matplotlib 3.3+ / numpy>=1.24 / scikit-image compatibility:
     # Fix 9: predict_proba() removed from Keras models entirely — replaced by
     # predict(), which returns probabilities directly for classification outputs.
     final_model.predict_proba(...)  →  final_model.predict(...)
+    # Fix 10: cache the loaded CNN across calls instead of load_model() fresh
+    # every classify() call. Uncached repeated loads bump Keras's global
+    # auto-naming counters (sequential, sequential_1, sequential_2, ...) and
+    # leave prior graph/session state alive — this is the "classifier gets
+    # messed up from repeated in-process reloads" failure mode.
+    final_model = load_model(model_name)  →  cached in a module-level dict, keyed by model_name
 
 --data-source cit additionally needs gwdatafind (pip install -e ".[site]"), and only
 works on a LIGO Data Grid machine (e.g. CIT) with datafind + frame access configured.

@@ -17,6 +17,25 @@ txt = txt.replace('from keras import backend as K',
 # Two call sites in this file, both hit during every classify() call.
 txt = txt.replace('final_model.predict_proba(concat_test_unlabelled, verbose=0)',
                   'final_model.predict(concat_test_unlabelled, verbose=0)')
+# Fix 10: cache the loaded model instead of calling load_model() fresh on every
+# classify() call. Our own script's loop hits this once per glitch (21x for a
+# --n-per-class 3 run) — every uncached load_model() bumps Keras's global
+# auto-naming counters (sequential, sequential_1, sequential_2, ...) and leaves
+# the previous model's graph/session state alive, which is exactly what caused
+# the "classifier gets messed up" behavior from repeated in-process reloads
+# (same root cause whether it's a notebook re-running a cell or a CLI loop).
+txt = txt.replace('import os\n', 'import os\n\n_model_cache = {}\n', 1)
+txt = txt.replace(
+    "final_model = load_model(model_name)\n\n"
+    "    final_model.compile(loss='categorical_crossentropy',\n"
+    "                        optimizer='adadelta',\n"
+    "                        metrics=['accuracy'])",
+    "if model_name not in _model_cache:\n"
+    "        _model_cache[model_name] = load_model(model_name)\n"
+    "        _model_cache[model_name].compile(loss='categorical_crossentropy',\n"
+    "                                         optimizer='adadelta',\n"
+    "                                         metrics=['accuracy'])\n"
+    "    final_model = _model_cache[model_name]")
 f.write_text(txt)
 
 f = sp / 'utils/utils.py'
