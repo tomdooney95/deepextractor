@@ -1,5 +1,6 @@
 """Utility functions — import from submodules for specifics."""
 
+from deepextractor.utils.mc_dropout import enable_mc_dropout, mc_predict
 from deepextractor.utils.checkpoints import (
     CHECKPOINT_BILBY,
     CHECKPOINT_REAL,
@@ -25,6 +26,8 @@ from deepextractor.utils.signal import (
 )
 
 __all__ = [
+    "enable_mc_dropout",
+    "mc_predict",
     "CHECKPOINT_BILBY",
     "CHECKPOINT_REAL",
     "save_checkpoint",
