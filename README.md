@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/_static/logo.png" alt="DeepExtractor logo" width="350">
+</p>
+
 # DeepExtractor
 
 [![PyPI](https://img.shields.io/pypi/v/deepextractor)](https://pypi.org/project/deepextractor/)
