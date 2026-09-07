@@ -40,6 +40,7 @@ dependencies = [
     "huggingface_hub>=0.20",
     "bilby>=2.0",
     "h5py>=3.0",
+    "astropy>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -86,6 +87,7 @@ Paper = "https://link.aps.org/doi/10.1103/s91m-c2jw"
 [project.scripts]
 deepextractor-train    = "deepextractor.training.trainer:main"
 deepextractor-generate = "deepextractor.generation.generate_timeseries:main"
+deepextractor-generate-separation = "deepextractor.generation.generate_separation_data:main"
 deepextractor-specgen  = "deepextractor.generation.generate_spectrograms:main"
 deepextractor-evaluate = "deepextractor.evaluation.simulate:main"
 

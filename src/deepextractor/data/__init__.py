@@ -3,6 +3,7 @@
 from deepextractor.data.datasets import (
     HDF5Dataset,
     HDF5ReconstructionDataset,
+    HDF5SeparationDataset,
     SpectrogramDataset,
     TimeSeriesDataset,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "SpectrogramDataset",
     "HDF5Dataset",
     "HDF5ReconstructionDataset",
+    "HDF5SeparationDataset",
     "ChannelStandardScaler",
     "fetch_omicron_triggers",
     "find_clean_gaps",

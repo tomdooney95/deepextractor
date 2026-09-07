@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import torch
 import h5py
@@ -232,5 +234,127 @@ class HDF5Dataset(Dataset):
         try:
             if self._file is not None:
                 self._file.close()
+        except Exception:
+            pass
+
+
+class HDF5SeparationDataset(Dataset):
+    """HDF5-backed dataset for multi-detector signal/glitch separation.
+
+    Reads the sharded output of ``generate_separation_data.py``
+    (``separation_shard_NNNN.h5`` files in ``shard_dir``), each holding
+    per-detector datasets ``noisy_{det}_{split}``, ``background_{det}_{split}``,
+    ``signal_only_{det}_{split}``. Samples are indexed globally across all
+    shards (concatenated in filename-sorted order).
+
+    Use ``shuffle=False`` in DataLoader — every sample is an independent
+    random draw at generation time (simulated noise/injections), so storage
+    order carries no structure to shuffle away, matching the convention used
+    by :class:`HDF5ReconstructionDataset`.
+
+    Args:
+        shard_dir: Directory containing ``separation_shard_*.h5`` files.
+        split: ``"train"`` or ``"val"``.
+        detectors: Detector names to load, in channel order. Must match (or
+            be a subset of) the detectors the shards were generated with.
+        input_scaler: Optional :class:`~deepextractor.data.ChannelStandardScaler`
+            (or any object exposing ``mean_``/``scale_`` shaped
+            ``(len(detectors),)``). Applied to the input only; targets are
+            assumed to be whitened already.
+        target_signal_only: If True, return only the signal targets
+            (``len(detectors)`` channels). If False (default), concatenate
+            ``[background, signal]`` → ``2 * len(detectors)`` channels,
+            matching :class:`~deepextractor.model.DeepExtractorSeparator`'s
+            output layout.
+        transform: Optional callable ``transform(input_ts=..., target_ts=...) → dict``.
+    """
+
+    def __init__(self, shard_dir, split, detectors=("H1", "L1", "V1"),
+                 input_scaler=None, target_signal_only=False, transform=None):
+        if split not in ("train", "val"):
+            raise ValueError(f"split must be 'train' or 'val', got {split!r}")
+
+        self.shard_dir = Path(shard_dir)
+        self.split = split
+        self.detectors = list(detectors)
+        self.input_scaler = input_scaler
+        self.target_signal_only = target_signal_only
+        self.transform = transform
+
+        shard_paths = sorted(self.shard_dir.glob("separation_shard_*.h5"))
+        if not shard_paths:
+            raise FileNotFoundError(
+                f"No separation_shard_*.h5 files found in {self.shard_dir}"
+            )
+        self._shard_paths = [str(p) for p in shard_paths]
+
+        # Read shapes only (cheap — no data touched) to build a global index.
+        shard_lengths = []
+        for p in self._shard_paths:
+            with h5py.File(p, "r") as f:
+                shard_lengths.append(f[f"noisy_{self.detectors[0]}_{split}"].shape[0])
+        self._cumulative = np.cumsum([0] + shard_lengths)
+        self._len = int(self._cumulative[-1])
+
+        self._files = {}  # lazy per-worker open: shard_path -> h5py.File
+
+    def __len__(self):
+        return self._len
+
+    def _file(self, shard_path):
+        f = self._files.get(shard_path)
+        if f is None:
+            f = h5py.File(shard_path, "r", swmr=True, libver="latest")
+            self._files[shard_path] = f
+        return f
+
+    def _locate(self, index):
+        shard_idx = int(np.searchsorted(self._cumulative, index, side="right") - 1)
+        local_idx = int(index - self._cumulative[shard_idx])
+        return self._shard_paths[shard_idx], local_idx
+
+    def __getitem__(self, index):
+        if index < 0 or index >= self._len:
+            raise IndexError(index)
+        shard_path, local_idx = self._locate(index)
+        f = self._file(shard_path)
+
+        noisy = np.stack(
+            [f[f"noisy_{det}_{self.split}"][local_idx] for det in self.detectors], axis=0,
+        )
+        x = torch.tensor(noisy, dtype=torch.float32)
+
+        if self.input_scaler is not None:
+            mean = torch.tensor(self.input_scaler.mean_, dtype=torch.float32).view(-1, 1)
+            scale = torch.tensor(self.input_scaler.scale_, dtype=torch.float32).view(-1, 1)
+            x = (x - mean) / scale
+
+        sig = np.stack(
+            [f[f"signal_only_{det}_{self.split}"][local_idx] for det in self.detectors], axis=0,
+        )
+        if self.target_signal_only:
+            y = torch.tensor(sig, dtype=torch.float32)
+        else:
+            bg = np.stack(
+                [f[f"background_{det}_{self.split}"][local_idx] for det in self.detectors], axis=0,
+            )
+            y = torch.tensor(np.concatenate([bg, sig], axis=0), dtype=torch.float32)
+
+        if self.transform is not None:
+            aug = self.transform(input_ts=x, target_ts=y)
+            x, y = aug["input_ts"], aug["target_ts"]
+
+        return x, y
+
+    def __getstate__(self):
+        # HDF5 file handles cannot be pickled — close and reopen per worker
+        state = self.__dict__.copy()
+        state["_files"] = {}
+        return state
+
+    def __del__(self):
+        try:
+            for f in self._files.values():
+                f.close()
         except Exception:
             pass
