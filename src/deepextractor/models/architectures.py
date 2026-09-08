@@ -196,15 +196,35 @@ class UNET1D_LSTM_ATT(nn.Module):
 # 1D models
 
 
+def _make_norm1d(norm, num_channels, num_groups=8):
+    """Build a BatchNorm1d or GroupNorm1d layer.
+
+    ``norm='bn'`` (default) preserves exact prior behaviour/state_dict keys.
+    ``norm='gn'`` uses a real grouped GroupNorm (not the degenerate
+    ``GroupNorm(ch, ch)`` == InstanceNorm case) — ``num_channels`` must be
+    divisible by ``num_groups``.
+    """
+    if norm == 'bn':
+        return nn.BatchNorm1d(num_channels)
+    if norm == 'gn':
+        if num_channels % num_groups != 0:
+            raise ValueError(
+                f"GroupNorm needs num_channels ({num_channels}) divisible by "
+                f"num_groups ({num_groups})."
+            )
+        return nn.GroupNorm(num_groups, num_channels)
+    raise ValueError(f"norm must be 'bn' or 'gn' — got {norm!r}")
+
+
 class DoubleConv1D(nn.Module):
-    def __init__(self, in_channels, out_channels, dropout_p=0.0):
+    def __init__(self, in_channels, out_channels, dropout_p=0.0, norm='bn', num_groups=8):
         super(DoubleConv1D, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm1d(out_channels),
+            _make_norm1d(norm, out_channels, num_groups),
             nn.ReLU(inplace=True),
             nn.Conv1d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm1d(out_channels),
+            _make_norm1d(norm, out_channels, num_groups),
             nn.ReLU(inplace=True),
         )
         # Dropout applied after the conv block so Sequential indices are unchanged
@@ -221,7 +241,7 @@ class DoubleConv1D(nn.Module):
 
 class UNET1D(nn.Module):
     def __init__(self, in_channels=1, out_channels=1, features=[64, 128, 256, 512],
-                 dropout_p=0.0):
+                 dropout_p=0.0, norm='bn', num_groups=8):
         super(UNET1D, self).__init__()
         self.ups = nn.ModuleList()
         self.downs = nn.ModuleList()
@@ -229,7 +249,9 @@ class UNET1D(nn.Module):
 
         # Encoder — no dropout; learns stable feature detectors.
         for feature in features:
-            self.downs.append(DoubleConv1D(in_channels, feature, dropout_p=0.0))
+            self.downs.append(
+                DoubleConv1D(in_channels, feature, dropout_p=0.0, norm=norm, num_groups=num_groups)
+            )
             in_channels = feature
 
         # Decoder — dropout applied here and at the bottleneck so uncertainty
@@ -238,9 +260,13 @@ class UNET1D(nn.Module):
             self.ups.append(
                 nn.ConvTranspose1d(feature * 2, feature, kernel_size=2, stride=2)
             )
-            self.ups.append(DoubleConv1D(feature * 2, feature, dropout_p=dropout_p))
+            self.ups.append(
+                DoubleConv1D(feature * 2, feature, dropout_p=dropout_p, norm=norm, num_groups=num_groups)
+            )
 
-        self.bottleneck = DoubleConv1D(features[-1], features[-1] * 2, dropout_p=dropout_p)
+        self.bottleneck = DoubleConv1D(
+            features[-1], features[-1] * 2, dropout_p=dropout_p, norm=norm, num_groups=num_groups
+        )
         self.final_conv = nn.Conv1d(features[0], out_channels, kernel_size=1)
 
     def forward(self, x):
