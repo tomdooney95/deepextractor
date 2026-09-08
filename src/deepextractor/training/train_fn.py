@@ -162,6 +162,92 @@ def train_fn_td(
     return tot / n, bg_acc / n, sig_acc / n
 
 
+def masked_mse_loss(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """MSE loss normalised only over active (mask=1) elements.
+
+    Args:
+        pred, target: (B, C, T).
+        mask: (B, C) or (C,) — 1.0 for channels that should contribute to the
+            loss, 0.0 for channels belonging to an offline/excluded detector
+            (broadcast over T). Excluded channels get exactly zero gradient,
+            rather than being trained toward an arbitrary zero target.
+    """
+    mask_bc = mask.unsqueeze(-1) if mask.dim() == 2 else mask.view(1, -1, 1)
+    sq_err = (pred - target) ** 2 * mask_bc
+    n_active = mask_bc.expand_as(sq_err).sum()
+    if n_active == 0:
+        raise ValueError("masked_mse_loss: mask excludes every element in this batch.")
+    return sq_err.sum() / n_active
+
+
+def train_fn_separation(loader, model, optimizer, scaler, device, use_amp=False):
+    """Train the multi-detector separation model for one epoch with a masked loss.
+
+    Expects the DataLoader to yield ``(data, targets, mask)`` — the 3-tuple
+    produced by :class:`~deepextractor.data.HDF5SeparationDataset` when
+    constructed with ``active_detectors`` set:
+
+        data    — (B, 2*n_det, T)  scaled strain + presence-flag channels
+        targets — (B, 2*n_det, T)  [bg_det1..detN, sig_det1..detN]
+        mask    — (B, 2*n_det) or (2*n_det,) — 1.0 active / 0.0 offline
+
+    Unlike :func:`train_fn_td`, this isn't hardcoded to 2 detectors — it
+    works for any ``n_det`` since the masked loss is computed over whatever
+    channel width the batch actually has.
+
+    Args:
+        scaler: ``torch.cuda.amp.GradScaler`` (same role as in ``train_fn_td``).
+        use_amp: Enable mixed-precision autocast. Off by default — prior TD
+            training on Snellius found AMP unstable with whitened targets.
+
+    Returns:
+        Average masked loss over the epoch (mean over batches).
+    """
+    loop = tqdm(loader, desc="Training on batch")
+    tot = 0.0
+    autocast_device = "cuda" if str(device).startswith("cuda") else "cpu"
+
+    for data, targets, mask in loop:
+        data = data.to(device)
+        targets = targets.float().to(device)
+        mask = mask.to(device)
+
+        optimizer.zero_grad(set_to_none=True)
+        with torch.amp.autocast(autocast_device, enabled=use_amp):
+            preds = model(data)
+            loss = masked_mse_loss(preds, targets, mask)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        tot += loss.item()
+        loop.set_postfix(loss=loss.item())
+
+    return tot / max(1, len(loader))
+
+
+@torch.no_grad()
+def eval_fn_separation(loader, model, device):
+    """Evaluate the multi-detector separation model with a masked loss.
+
+    Mirrors :func:`train_fn_separation` — see its docstring for the expected
+    ``(data, targets, mask)`` loader output. Runs under ``torch.no_grad``,
+    does not update weights, and restores the model to train mode afterwards.
+    """
+    model.eval()
+    tot = 0.0
+    for data, targets, mask in loader:
+        data = data.to(device)
+        targets = targets.float().to(device)
+        mask = mask.to(device)
+        preds = model(data)
+        tot += masked_mse_loss(preds, targets, mask).item()
+
+    model.train()
+    return tot / max(1, len(loader))
+
+
 def eval_fn_td(
     loader,
     model,

@@ -267,10 +267,35 @@ class HDF5SeparationDataset(Dataset):
             matching :class:`~deepextractor.model.DeepExtractorSeparator`'s
             output layout.
         transform: Optional callable ``transform(input_ts=..., target_ts=...) → dict``.
+        active_detectors: If ``None`` (default), every detector in
+            ``detectors`` is treated as present — behaviour and return
+            signature (``x, y``) are unchanged from before this option
+            existed. If a subset of ``detectors``, every sample simulates
+            the detectors *not* in this list being permanently offline: the
+            input is scaled as usual and then that detector's channel is
+            zeroed (post-scaling, so it's an exact, scaler-independent
+            zero — an unambiguous "no data" signal rather than a
+            near-zero constant), a same-shaped 0/1 presence-flag channel
+            per detector is appended to the input (so the model can tell
+            "genuinely quiet" apart from "offline"), and the target
+            channels for the missing detector(s) are zeroed too. In this
+            mode ``__getitem__`` returns ``(x, y, mask)`` instead of
+            ``(x, y)`` — ``x`` has ``2 * len(detectors)`` channels (strain
+            + flags), ``mask`` has the same channel layout as ``y`` (1.0
+            for active-detector channels, 0.0 for offline ones) for use in
+            a masked loss, so the model is never penalised for whatever it
+            outputs on a channel it was given no real information about.
+            Every sample currently gets the *same* static presence pattern
+            (this is for the deterministic "detector X is permanently off"
+            case, e.g. training without real Virgo data) — per-sample
+            *random* presence for the future detector-dropout curriculum is
+            a natural extension of this same mechanism, not implemented yet
+            since it isn't needed until that training phase.
     """
 
     def __init__(self, shard_dir, split, detectors=("H1", "L1", "V1"),
-                 input_scaler=None, target_signal_only=False, transform=None):
+                 input_scaler=None, target_signal_only=False, transform=None,
+                 active_detectors=None):
         if split not in ("train", "val"):
             raise ValueError(f"split must be 'train' or 'val', got {split!r}")
 
@@ -280,6 +305,19 @@ class HDF5SeparationDataset(Dataset):
         self.input_scaler = input_scaler
         self.target_signal_only = target_signal_only
         self.transform = transform
+
+        if active_detectors is None:
+            self.active_detectors = None
+            self._presence = None
+        else:
+            unknown = set(active_detectors) - set(self.detectors)
+            if unknown:
+                raise ValueError(f"active_detectors {sorted(unknown)} not in detectors {self.detectors}")
+            self.active_detectors = list(active_detectors)
+            self._presence = torch.tensor(
+                [1.0 if det in self.active_detectors else 0.0 for det in self.detectors],
+                dtype=torch.float32,
+            )
 
         shard_paths = sorted(self.shard_dir.glob("separation_shard_*.h5"))
         if not shard_paths:
@@ -339,6 +377,21 @@ class HDF5SeparationDataset(Dataset):
                 [f[f"background_{det}_{self.split}"][local_idx] for det in self.detectors], axis=0,
             )
             y = torch.tensor(np.concatenate([bg, sig], axis=0), dtype=torch.float32)
+
+        if self._presence is not None:
+            presence = self._presence                      # (n_det,)
+            x = x * presence.view(-1, 1)                    # zero offline detector(s), post-scaling
+            flags = presence.view(-1, 1).expand(-1, x.shape[-1])
+            x = torch.cat([x, flags], dim=0)                # (2*n_det, T): strain + presence flags
+
+            mask = presence if self.target_signal_only else torch.cat([presence, presence])
+            y = y * mask.view(-1, 1)
+
+            if self.transform is not None:
+                aug = self.transform(input_ts=x, target_ts=y)
+                x, y = aug["input_ts"], aug["target_ts"]
+
+            return x, y, mask
 
         if self.transform is not None:
             aug = self.transform(input_ts=x, target_ts=y)
