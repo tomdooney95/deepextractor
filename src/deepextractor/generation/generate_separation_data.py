@@ -112,6 +112,20 @@ DMAX_MPC = 3000.0
 # 20k-sample val set's total squared MSE). 20 Mpc caps a GW150914-like
 # system at roughly SNR ~530.
 DMIN_MPC = 20.0
+# Defensive ceiling on injected-signal SNR: IMRPhenomXPHM has a specific,
+# characterized failure mode (extreme mass ratio + non-zero precessing spin +
+# reference_frequency above the system's own ISCO/merger frequency) that
+# produces a non-physical waveform -- constant-amplitude, non-chirping, no
+# merger structure -- with SNR in the tens of thousands to ~2x10^5, found by
+# direct inspection of an outlier sample. Confirmed via a parameter sweep:
+# changing any one of those four conditions (lower reference_frequency,
+# switch to IMRPhenomXP/Pv2, equal mass ratio, or zero spin) drops the SNR
+# back to a normal, physical value. The intended loudest *legitimate* signals
+# in this dataset reach ~500-530 (see DMIN_MPC/glitch SNR_MAX above), so 1000
+# gives generous headroom above anything real while sitting far below the
+# observed garbage values -- any injection exceeding it is treated as a
+# failed attempt and retried with fresh parameters, same as an exception.
+SNR_SANITY_MAX = 1000.0
 MINIMUM_FREQUENCY = 20.0
 REFERENCE_FREQUENCY = 50.0
 WAVEFORM_APPROXIMANT = "IMRPhenomXPHM"
@@ -242,14 +256,23 @@ def _generate_sample(ifos, wfg, rng, dc_grid, dl_grid, dmax_mpc, dmin_mpc, no_in
     Returns ``{detector_name: (noisy, background, signal_only)}``, each a
     length-``LENGTH`` float64 array.
     """
-    ifos.set_strain_data_from_power_spectral_densities(
-        sampling_frequency=SAMPLE_RATE, duration=duration,
-        start_time=geocent_time - (duration - 0.5),
-    )
-    background = {
-        ifo.name: np.asarray(ifo.whitened_time_domain_strain, dtype=np.float64).copy()
-        for ifo in ifos
-    }
+    def _draw_noise():
+        # inject_signal() ADDS to the interferometers' current strain rather
+        # than replacing it, so a rejected/failed attempt's signal stays
+        # baked into their internal state -- redrawing fresh noise (rather
+        # than trying to reset bilby's internal buffers directly, which
+        # proved unreliable to intercept) guarantees each retry starts from
+        # a genuinely clean, uncontaminated baseline.
+        ifos.set_strain_data_from_power_spectral_densities(
+            sampling_frequency=SAMPLE_RATE, duration=duration,
+            start_time=geocent_time - (duration - 0.5),
+        )
+        return {
+            ifo.name: np.asarray(ifo.whitened_time_domain_strain, dtype=np.float64).copy()
+            for ifo in ifos
+        }
+
+    background = _draw_noise()
     signal_only = {name: np.zeros_like(arr) for name, arr in background.items()}
 
     if rng.random() >= no_inj_prob:
@@ -257,11 +280,16 @@ def _generate_sample(ifos, wfg, rng, dc_grid, dl_grid, dmax_mpc, dmin_mpc, no_in
             try:
                 params = _random_cbc_parameters(rng, dc_grid, dl_grid, dmax_mpc, dmin_mpc, geocent_time)
                 ifos.inject_signal(waveform_generator=wfg, parameters=params)
+                max_snr = max(ifo.meta_data["optimal_SNR"] for ifo in ifos)
+                if not np.isfinite(max_snr) or max_snr > SNR_SANITY_MAX:
+                    background = _draw_noise()  # waveform-generation pathology (see SNR_SANITY_MAX comment) -- retry
+                    continue
                 for ifo in ifos:
                     strained = np.asarray(ifo.whitened_time_domain_strain, dtype=np.float64)
                     signal_only[ifo.name] = strained - background[ifo.name]
                 break
             except Exception:
+                background = _draw_noise()
                 continue  # falls back to signal_only=0 (noise-only sample) if all retries fail
 
     noisy = {name: background[name] + signal_only[name] for name in background}
