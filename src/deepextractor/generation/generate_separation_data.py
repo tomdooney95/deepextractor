@@ -93,9 +93,25 @@ SAMPLE_RATE = 4096
 DURATION = 4.0
 LENGTH = int(DURATION * SAMPLE_RATE)
 GLITCH_T_MIN, GLITCH_T_MAX = 0.125, 2.0
-SNR_MIN, SNR_MAX = 1, 250
+# Glitch SNR is drawn log-uniform (equal probability mass per decade), not
+# linear-uniform -- the original flat uniform(1, 250) put 50% of injections
+# above SNR 125 with no long tail. Note the effective per-sample loudness is
+# further shaped by n_injs (1-30 stacked injections per sample, see
+# _inject_glitch): the median of the *max* over many draws lands well above
+# a single draw's median, so SNR_MAX alone doesn't linearly set the typical
+# case. Measured empirically on real generated data at these bounds: median
+# max-amplitude ~74, p99 ~382, ~8% of samples exceed the old 250 ceiling.
+SNR_MIN, SNR_MAX = 1, 500
 NO_INJ_PROB = 0.05
 DMAX_MPC = 3000.0
+# Minimum distance floor for the CBC signal -- without this, uniform-in-
+# comoving-volume sampling has nonzero density arbitrarily close to 0 Mpc,
+# and since strain amplitude scales as 1/distance, a rare near-zero-distance
+# draw produces a physically absurd, numerically catastrophic amplitude
+# outlier (observed directly: one such sample accounted for 99.6% of a
+# 20k-sample val set's total squared MSE). 20 Mpc caps a GW150914-like
+# system at roughly SNR ~530.
+DMIN_MPC = 20.0
 MINIMUM_FREQUENCY = 20.0
 REFERENCE_FREQUENCY = 50.0
 WAVEFORM_APPROXIMANT = "IMRPhenomXPHM"
@@ -136,13 +152,26 @@ def _build_dc_dl_lookup(dmax_mpc: float, n_z: int = 8000):
     return dc.astype(np.float64), dl.astype(np.float64)
 
 
-def _sample_luminosity_distance(rng, dc_grid, dl_grid, dmax_mpc: float):
+def _sample_luminosity_distance(rng, dc_grid, dl_grid, dmax_mpc: float, dmin_mpc: float):
+    """Uniform-in-comoving-volume distance, bounded below by dmin_mpc.
+
+    Without a floor, u_rand -> 0 drives the sampled distance to 0 Mpc --
+    physically absurd (no real BBH merger occurs within a few Mpc of Earth)
+    and numerically catastrophic, since GW strain amplitude scales as
+    1/distance: a rare near-zero-distance draw produces an amplitude outlier
+    that can dominate a downstream MSE loss by orders of magnitude (observed
+    directly -- one such sample accounted for 99.6% of a 20k-sample val set's
+    total squared error). dmin_mpc caps the sampled comoving volume to
+    [dmin_mpc**3, dmax_mpc**3] instead of [0, dmax_mpc**3].
+    """
+    dc_min_cubed = dmin_mpc ** 3
+    dc_max_cubed = dmax_mpc ** 3
     u_rand = rng.random()
-    dc = dmax_mpc * u_rand ** (1 / 3)
+    dc = (dc_min_cubed + u_rand * (dc_max_cubed - dc_min_cubed)) ** (1 / 3)
     return float(np.interp(dc, dc_grid, dl_grid))
 
 
-def _random_cbc_parameters(rng, dc_grid, dl_grid, dmax_mpc, geocent_time):
+def _random_cbc_parameters(rng, dc_grid, dl_grid, dmax_mpc, dmin_mpc, geocent_time):
     m1 = rng.uniform(5, 200)
     m2 = rng.uniform(5, 200)
     if m1 < m2:
@@ -152,7 +181,7 @@ def _random_cbc_parameters(rng, dc_grid, dl_grid, dmax_mpc, geocent_time):
         a_1=rng.uniform(0, 0.99), a_2=rng.uniform(0, 0.99),
         tilt_1=rng.uniform(0, np.pi), tilt_2=rng.uniform(0, np.pi),
         phi_12=rng.uniform(0, 2 * np.pi), phi_jl=rng.uniform(0, 2 * np.pi),
-        luminosity_distance=_sample_luminosity_distance(rng, dc_grid, dl_grid, dmax_mpc),
+        luminosity_distance=_sample_luminosity_distance(rng, dc_grid, dl_grid, dmax_mpc, dmin_mpc),
         theta_jn=np.arccos(rng.uniform(-1.0, 1.0)),
         psi=rng.uniform(0, np.pi),
         phase=rng.uniform(0, 2 * np.pi),
@@ -171,6 +200,11 @@ def _inject_glitch(noisy: np.ndarray, rng, sample_rate: int = SAMPLE_RATE,
                     snr_min: float = SNR_MIN, snr_max: float = SNR_MAX) -> None:
     """Add 1-30 random analytic glitch morphologies to ``noisy`` in place.
 
+    SNR is drawn log-uniform between snr_min and snr_max (equal probability
+    mass per decade) rather than linear-uniform, so most injections stay at
+    moderate SNR while a genuinely loud tail is still reachable -- a flat
+    uniform(1, 1000) would put the bulk of injections at high SNR instead.
+
     Requested SNR is drawn in bilby's unit-variance-whitened convention and
     converted to the flat-PSD convention ``whitened_snr_scaling`` assumes via
     the analytically correct ``sqrt(sample_rate / 2)`` factor (replaces the
@@ -178,8 +212,9 @@ def _inject_glitch(noisy: np.ndarray, rng, sample_rate: int = SAMPLE_RATE,
     """
     length = noisy.shape[0]
     n_injs = int(rng.integers(1, 30))
+    log_snr_min, log_snr_max = np.log(snr_min), np.log(snr_max)
     for _ in range(n_injs):
-        snr_to_scale = rng.uniform(snr_min, snr_max) / np.sqrt(sample_rate / 2)
+        snr_to_scale = np.exp(rng.uniform(log_snr_min, log_snr_max)) / np.sqrt(sample_rate / 2)
         duration = rng.uniform(t_min, t_max)
         s_type = SIGNAL_TYPES[rng.integers(0, len(SIGNAL_TYPES))]
         _, waveform = SIGNAL_FUNCTION_MAP[s_type](duration, sample_rate=sample_rate)
@@ -200,7 +235,7 @@ def _inject_glitch(noisy: np.ndarray, rng, sample_rate: int = SAMPLE_RATE,
         noisy[start:start + len_glitch] += glitch
 
 
-def _generate_sample(ifos, wfg, rng, dc_grid, dl_grid, dmax_mpc, no_inj_prob,
+def _generate_sample(ifos, wfg, rng, dc_grid, dl_grid, dmax_mpc, dmin_mpc, no_inj_prob,
                       geocent_time, duration):
     """Generate one multi-detector sample.
 
@@ -220,7 +255,7 @@ def _generate_sample(ifos, wfg, rng, dc_grid, dl_grid, dmax_mpc, no_inj_prob,
     if rng.random() >= no_inj_prob:
         for _ in range(MAX_INJECTION_RETRIES):
             try:
-                params = _random_cbc_parameters(rng, dc_grid, dl_grid, dmax_mpc, geocent_time)
+                params = _random_cbc_parameters(rng, dc_grid, dl_grid, dmax_mpc, dmin_mpc, geocent_time)
                 ifos.inject_signal(waveform_generator=wfg, parameters=params)
                 for ifo in ifos:
                     strained = np.asarray(ifo.whitened_time_domain_strain, dtype=np.float64)
@@ -246,7 +281,7 @@ def _generate_sample(ifos, wfg, rng, dc_grid, dl_grid, dmax_mpc, no_inj_prob,
 # ---------------------------------------------------------------------------
 
 def _worker_shard(shard_id, start, stop, train_cut, detectors, out_dir, duration,
-                   no_inj_prob, dmax_mpc, geocent_time, seed):
+                   no_inj_prob, dmax_mpc, dmin_mpc, geocent_time, seed):
     rng = np.random.default_rng(seed)
 
     ifos = bilby.gw.detector.InterferometerList(list(detectors))
@@ -292,7 +327,7 @@ def _worker_shard(shard_id, start, stop, train_cut, detectors, out_dir, duration
         wptr_val = 0
         for idx in range(start, stop):
             sample = _generate_sample(
-                ifos, wfg, rng, dc_grid, dl_grid, dmax_mpc, no_inj_prob, geocent_time, duration,
+                ifos, wfg, rng, dc_grid, dl_grid, dmax_mpc, dmin_mpc, no_inj_prob, geocent_time, duration,
             )
             split, wptr = ("train", wptr_train) if idx < train_cut else ("val", wptr_val)
             for det in detectors:
@@ -328,6 +363,9 @@ def main():
     parser.add_argument("--no-inj-prob", type=float, default=NO_INJ_PROB,
                          help="Fraction of samples with no signal injected (pure noise, still glitch-eligible).")
     parser.add_argument("--dmax-mpc", type=float, default=DMAX_MPC)
+    parser.add_argument("--dmin-mpc", type=float, default=DMIN_MPC,
+                         help="Minimum CBC distance floor -- caps signal amplitude, avoiding the "
+                              "near-zero-distance blowup a floor-less uniform-in-volume prior allows.")
     parser.add_argument("--shard-size", type=int, default=20_000,
                          help="Samples per shard file (~11.25GB/shard at 3 detectors, 4s).")
     parser.add_argument("--num-workers", type=int, default=min(16, os.cpu_count() or 1))
@@ -353,7 +391,7 @@ def main():
         stop = min(start + args.shard_size, n_total)
         tasks.append((
             shard_id, start, stop, train_cut, args.detectors, str(args.output_dir),
-            args.duration, args.no_inj_prob, args.dmax_mpc, GEOCENT_TIME, args.seed + start,
+            args.duration, args.no_inj_prob, args.dmax_mpc, args.dmin_mpc, GEOCENT_TIME, args.seed + start,
         ))
         shard_id += 1
 
