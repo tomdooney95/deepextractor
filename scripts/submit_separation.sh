@@ -39,13 +39,16 @@ fi
 
 # V1 permanently off (matches the real O3/O4 data-availability plan), presence-flag
 # + masked-loss mechanism handles it; --workers matches --cpus-per-gpu above.
+# No --amp: prior Snellius training on this codebase found AMP unstable with
+# whitened targets (see train_fn_td's docstring) -- train_separation.py
+# defaults --amp to off for the same reason, so leave it off here too.
 python scripts/train_separation.py \
     --shard-dir /projects/0/prjs1498/data_separation_v3 \
     --detectors H1 L1 V1 --active-detectors H1 L1 \
     --scaler /projects/0/prjs1498/data_separation_v3/scaler.pkl \
     --features 64 128 256 512 1024 2048 \
     --dropout-p 0.1 --norm gn --num-groups 8 \
-    --epochs 300 --batch-size 32 --workers 16 --amp \
+    --epochs 300 --batch-size 32 --workers 16 \
     --out "$OUT_DIR" \
     "${RESUME_ARGS[@]}"
 

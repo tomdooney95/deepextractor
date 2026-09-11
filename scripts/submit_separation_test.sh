@@ -33,13 +33,16 @@ mkdir -p logs
 nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -l 5 > logs/gpu_mem_${SLURM_JOB_ID}.log &
 MEM_MONITOR_PID=$!
 
+# No --amp -- matches submit_separation.sh (prior Snellius training found AMP
+# unstable with whitened targets), and this test should validate the same
+# config the real job will actually use.
 python scripts/train_separation.py \
     --shard-dir /projects/0/prjs1498/data_separation_v3 \
     --detectors H1 L1 V1 --active-detectors H1 L1 \
     --scaler /projects/0/prjs1498/data_separation_v3/scaler.pkl \
     --features 64 128 256 512 1024 2048 \
     --dropout-p 0.1 --norm gn --num-groups 8 \
-    --epochs 1 --batch-size 32 --workers 16 --amp \
+    --epochs 1 --batch-size 32 --workers 16 \
     --out /projects/0/prjs1498/checkpoints/separation_v1_test
 
 kill $MEM_MONITOR_PID
