@@ -180,6 +180,30 @@ def masked_mse_loss(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor
     return sq_err.sum() / n_active
 
 
+def _masked_mse_components(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor):
+    """Split a combined masked-MSE loss into (total, background, signal).
+
+    Assumes the standard channel layout HDF5SeparationDataset produces when
+    ``target_signal_only=False``: the first half of channels are background
+    targets, the second half signal targets, both in the same detector
+    order. ``total`` here is mathematically identical to
+    ``masked_mse_loss(pred, target, mask)`` on the full tensor -- background
+    and signal always have equal active-element counts (the presence mask
+    applies identically to both), so ``0.5 * (bg + sig)`` and the combined
+    MSE over the whole tensor are the same value. This is purely additional
+    diagnostic detail, not a change to what gets optimized.
+    """
+    half = pred.shape[1] // 2
+    if mask.dim() == 2:
+        mask_bg, mask_sig = mask[:, :half], mask[:, half:]
+    else:
+        mask_bg, mask_sig = mask[:half], mask[half:]
+    bg_loss = masked_mse_loss(pred[:, :half], target[:, :half], mask_bg)
+    sig_loss = masked_mse_loss(pred[:, half:], target[:, half:], mask_sig)
+    total = 0.5 * (bg_loss + sig_loss)
+    return total, bg_loss, sig_loss
+
+
 def train_fn_separation(loader, model, optimizer, scaler, device, use_amp=False):
     """Train the multi-detector separation model for one epoch with a masked loss.
 
@@ -201,10 +225,12 @@ def train_fn_separation(loader, model, optimizer, scaler, device, use_amp=False)
             training on Snellius found AMP unstable with whitened targets.
 
     Returns:
-        Average masked loss over the epoch (mean over batches).
+        (avg_total, avg_bg, avg_sig) over the epoch (mean over batches).
+        Backward pass uses avg_total only, same value as before this
+        component split was added.
     """
     loop = tqdm(loader, desc="Training on batch")
-    tot = 0.0
+    tot = bg_acc = sig_acc = 0.0
     autocast_device = "cuda" if str(device).startswith("cuda") else "cpu"
 
     for data, targets, mask in loop:
@@ -215,16 +241,19 @@ def train_fn_separation(loader, model, optimizer, scaler, device, use_amp=False)
         optimizer.zero_grad(set_to_none=True)
         with torch.amp.autocast(autocast_device, enabled=use_amp):
             preds = model(data)
-            loss = masked_mse_loss(preds, targets, mask)
+            loss, bg_loss, sig_loss = _masked_mse_components(preds, targets, mask)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
 
         tot += loss.item()
-        loop.set_postfix(loss=loss.item())
+        bg_acc += bg_loss.item()
+        sig_acc += sig_loss.item()
+        loop.set_postfix(total=loss.item(), bg=bg_loss.item(), sig=sig_loss.item())
 
-    return tot / max(1, len(loader))
+    n = max(1, len(loader))
+    return tot / n, bg_acc / n, sig_acc / n
 
 
 @torch.no_grad()
@@ -232,20 +261,25 @@ def eval_fn_separation(loader, model, device):
     """Evaluate the multi-detector separation model with a masked loss.
 
     Mirrors :func:`train_fn_separation` — see its docstring for the expected
-    ``(data, targets, mask)`` loader output. Runs under ``torch.no_grad``,
-    does not update weights, and restores the model to train mode afterwards.
+    ``(data, targets, mask)`` loader output and the ``(total, bg, sig)``
+    return convention. Runs under ``torch.no_grad``, does not update
+    weights, and restores the model to train mode afterwards.
     """
     model.eval()
-    tot = 0.0
+    tot = bg_acc = sig_acc = 0.0
     for data, targets, mask in loader:
         data = data.to(device)
         targets = targets.float().to(device)
         mask = mask.to(device)
         preds = model(data)
-        tot += masked_mse_loss(preds, targets, mask).item()
+        loss, bg_loss, sig_loss = _masked_mse_components(preds, targets, mask)
+        tot += loss.item()
+        bg_acc += bg_loss.item()
+        sig_acc += sig_loss.item()
 
     model.train()
-    return tot / max(1, len(loader))
+    n = max(1, len(loader))
+    return tot / n, bg_acc / n, sig_acc / n
 
 
 def eval_fn_td(

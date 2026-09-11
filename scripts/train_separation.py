@@ -246,19 +246,32 @@ def main():
         logger.info("Resumed from %s (epoch %d, best_val=%.4e)", args.resume, start_epoch, best_val_loss)
 
     # --- Training loop ---
-    history = {"train_loss": [], "val_loss": []}
+    history = {
+        "train_total": [], "train_bg": [], "train_sig": [],
+        "val_total": [], "val_bg": [], "val_sig": [],
+    }
     es_counter = 0
     epoch = start_epoch
 
     for epoch in range(start_epoch, start_epoch + args.epochs):
         logger.info("Epoch %d/%d", epoch + 1, start_epoch + args.epochs)
 
-        train_loss = train_fn_separation(train_loader, model, optimizer, grad_scaler, device, use_amp=args.amp)
-        val_loss = eval_fn_separation(val_loader, model, device)
+        train_total, train_bg, train_sig = train_fn_separation(
+            train_loader, model, optimizer, grad_scaler, device, use_amp=args.amp,
+        )
+        val_total, val_bg, val_sig = eval_fn_separation(val_loader, model, device)
+        val_loss = val_total  # what scheduler/early-stopping/checkpointing act on
 
-        history["train_loss"].append(train_loss)
-        history["val_loss"].append(val_loss)
-        logger.info("LR=%.3e | train=%.4e | val=%.4e", optimizer.param_groups[0]["lr"], train_loss, val_loss)
+        history["train_total"].append(train_total)
+        history["train_bg"].append(train_bg)
+        history["train_sig"].append(train_sig)
+        history["val_total"].append(val_total)
+        history["val_bg"].append(val_bg)
+        history["val_sig"].append(val_sig)
+        logger.info(
+            "LR=%.3e | train total=%.4e bg=%.4e sig=%.4e | val total=%.4e bg=%.4e sig=%.4e",
+            optimizer.param_groups[0]["lr"], train_total, train_bg, train_sig, val_total, val_bg, val_sig,
+        )
 
         scheduler.step(val_loss)
 
