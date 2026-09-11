@@ -1,15 +1,14 @@
 #!/bin/bash -l
 # Short validation run BEFORE the real submit_separation.sh job: confirms the
-# full-size model (~43M params, 1024-wide, 16384-length sequences) actually
+# full-size model (173M params, 2048-wide, 16384-length sequences) actually
 # fits in the H100's memory at --batch-size 32, and that the whole pipeline
 # (env, data loading from the real transferred dataset, scaler fit/cache)
-# launches cleanly. The 6-level/2048-wide (~173M param) version was tested
-# directly on the real GPU and confirmed no OOM at this batch size (job
-# 26571117, killed at its 30min cap before finishing an epoch, not before
-# proving the config runs) -- this smaller config needs strictly less memory,
-# so this test is now more about the pipeline than a real memory-fit risk.
-# Not self-resuming (deliberately, so reruns don't reuse a possibly-untested
-# checkpoint).
+# launches cleanly. Already tested once directly on the real GPU (job
+# 26571117: no OOM in ~7 min of training before hitting this script's own
+# 30min cap, confirmed via nvidia-smi -l 5 polling) -- rerun mainly as a
+# pipeline sanity check after switching back from the smaller 5-level
+# config. Not self-resuming (deliberately, so reruns don't reuse a possibly-
+# untested checkpoint).
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH -p gpu_h100
@@ -44,7 +43,7 @@ python scripts/train_separation.py \
     --shard-dir /projects/0/prjs1498/data_separation_v3 \
     --detectors H1 L1 V1 --active-detectors H1 L1 \
     --scaler /projects/0/prjs1498/data_separation_v3/scaler.pkl \
-    --features 64 128 256 512 1024 \
+    --features 64 128 256 512 1024 2048 \
     --dropout-p 0.1 --norm gn --num-groups 8 \
     --epochs 1 --batch-size 32 --workers 16 \
     --out /projects/0/prjs1498/checkpoints/separation_v1_test

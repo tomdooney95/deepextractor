@@ -46,7 +46,7 @@ python scripts/train_separation.py \
     --shard-dir /projects/0/prjs1498/data_separation_v3 \
     --detectors H1 L1 V1 --active-detectors H1 L1 \
     --scaler /projects/0/prjs1498/data_separation_v3/scaler.pkl \
-    --features 64 128 256 512 1024 \
+    --features 64 128 256 512 1024 2048 \
     --dropout-p 0.1 --norm gn --num-groups 8 \
     --epochs 300 --batch-size 32 --workers 16 \
     --out "$OUT_DIR" \
