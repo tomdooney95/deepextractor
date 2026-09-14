@@ -76,6 +76,10 @@ docs = [
 site = [
     "gwtrigfind",
 ]
+# Nested-sampling PE (scripts/pe/) — bilby itself is already a core dependency
+pe = [
+    "dynesty>=2.1",
+]
 # Full install
 all = ["deepextractor[generative,dev,docs]"]
 

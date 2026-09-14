@@ -1,0 +1,4 @@
+# DAGMan workflow for parameter estimation job
+
+JOB my_run job.sub
+VARS my_run seed="2026" label="deleteme"

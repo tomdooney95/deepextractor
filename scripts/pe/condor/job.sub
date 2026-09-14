@@ -1,0 +1,14 @@
+Universe   = vanilla
+# TODO: point this at your own deepextractor conda env's python binary on
+# whichever cluster you're submitting from (was Harsh's personal Mac path
+# in the original repo -- won't resolve on CIT/Snellius as-is).
+Executable = /path/to/your/conda/envs/deepextractor/bin/python
+arguments = ../run.py --seed $(seed) --label $(label)
+getenv = true
+Log = ./logs/$(label).log
+Error = ./logs/$(label).err
+Output = ./logs/$(label).out
+request_memory = 8GB
+request_cpus = 16
+request_disk = 8GB
+Queue 1
