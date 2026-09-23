@@ -241,6 +241,14 @@ def main():
         model.load_state_dict(ckpt["state_dict"])
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
+        # load_state_dict restores the scheduler's own patience/factor from the
+        # checkpoint too, silently overriding whatever --lr-patience/--lr-factor
+        # were just passed on this invocation -- reapply them so a resumed run
+        # can actually change these hyperparameters instead of being stuck with
+        # whatever the original run used. (num_bad_epochs/best/cooldown_counter
+        # are left as restored, since that history should carry over.)
+        scheduler.patience = args.lr_patience
+        scheduler.factor = args.lr_factor
         start_epoch = ckpt.get("epoch", 0) + 1
         best_val_loss = ckpt["scheduler"]["best"]
         logger.info("Resumed from %s (epoch %d, best_val=%.4e)", args.resume, start_epoch, best_val_loss)

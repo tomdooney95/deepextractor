@@ -49,6 +49,7 @@ python scripts/train_separation.py \
     --features 64 128 256 512 1024 2048 \
     --dropout-p 0.1 --norm gn --num-groups 8 \
     --epochs 300 --batch-size 32 --workers 16 \
+    --lr-patience 3 --patience 7 \
     --out "$OUT_DIR" \
     "${RESUME_ARGS[@]}"
 
