@@ -250,7 +250,12 @@ def main():
         scheduler.patience = args.lr_patience
         scheduler.factor = args.lr_factor
         start_epoch = ckpt.get("epoch", 0) + 1
-        best_val_loss = ckpt["scheduler"]["best"]
+        # Prefer the training loop's own exact best_val_loss (saved below since
+        # this fix); scheduler["best"] is only an approximation of it -- the
+        # scheduler applies its own relative improvement threshold internally,
+        # so it can lag behind the loop's plain "any decrease counts" check.
+        # Fall back to it for older checkpoints saved before this field existed.
+        best_val_loss = ckpt.get("best_val_loss", ckpt["scheduler"]["best"])
         logger.info("Resumed from %s (epoch %d, best_val=%.4e)", args.resume, start_epoch, best_val_loss)
 
     # --- Training loop ---
@@ -291,6 +296,7 @@ def main():
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
                 "epoch": epoch,
+                "best_val_loss": best_val_loss,
                 "mode": "separation",
                 "config": run_config,
             }
