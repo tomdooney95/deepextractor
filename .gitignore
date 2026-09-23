@@ -53,6 +53,13 @@ pretrained/
 checkpoints/**/*.pth.tar
 checkpoints/**/*.pth
 
+# Real background/noise datasets (get_clean_backgrounds.py output) — large
+# pickles generated on CIT from LIGO frame data, never meant for git.
+backgrounds_*.pkl
+real_backgrounds*.pkl
+data_4s_real/
+data_separation_real/
+
 # Track bundled assets (scalers, cdvgan weights) via git-lfs (see .gitattributes)
 !assets/**
 
