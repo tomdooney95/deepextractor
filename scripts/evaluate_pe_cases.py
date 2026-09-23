@@ -311,37 +311,56 @@ def inject_gengli_glitch(ex: dict, inject_h1: bool | None = None) -> dict:
 
 # ── Model inference ───────────────────────────────────────────────────────────
 
-def run_separator(ex: dict, model, scaler, device) -> dict:
-    """Run DeepExtractor and compute all three output cases."""
-    x = np.stack([ex["glitchy_h1"], ex["glitchy_l1"]])[np.newaxis].astype(np.float32)
-    x_scaled = scaler.transform(x.reshape(-1, 1)).reshape(x.shape)
+def run_separator(
+    ex: dict, model, scaler, device,
+    detectors=("H1", "L1"), active_detectors=("H1", "L1"), use_presence_flags=False,
+) -> dict:
+    """Run DeepExtractor and compute all three output cases.
+
+    `detectors`/`active_detectors`/`use_presence_flags` mirror the channel
+    layout `HDF5SeparationDataset` (deepextractor.data.datasets) builds during
+    training: legacy checkpoints (use_presence_flags=False) take a plain
+    (n_det, T) strain input and a global scaler; checkpoints trained via
+    scripts/train_separation.py (use_presence_flags=True) take a
+    (2*n_det, T) input — per-channel-scaled strain with offline detectors
+    zeroed, concatenated with a 0/1 presence-flag channel per detector — and
+    a per-channel ChannelStandardScaler fit over all of `detectors`. Detectors
+    in `detectors` but not `active_detectors` (e.g. V1, permanently offline
+    in checkpoints/separation_v1) get zero strain input and their predicted
+    outputs are untrained noise — not returned.
+    """
+    ifo_strain = {
+        det: ex[f"glitchy_{det.lower()}"] if det in active_detectors else np.zeros(LENGTH, dtype=np.float32)
+        for det in detectors
+    }
+    noisy = np.stack([ifo_strain[det] for det in detectors])[np.newaxis].astype(np.float32)  # (1, n_det, T)
+
+    if use_presence_flags:
+        scaled = scaler.transform(noisy)  # per-channel ChannelStandardScaler → (1, n_det, T)
+        presence = np.array([1.0 if d in active_detectors else 0.0 for d in detectors], dtype=np.float32)
+        scaled = scaled * presence[np.newaxis, :, np.newaxis]
+        flags = np.broadcast_to(presence[np.newaxis, :, np.newaxis], scaled.shape)
+        x = np.concatenate([scaled, flags], axis=1)  # (1, 2*n_det, T)
+    else:
+        x = scaler.transform(noisy.reshape(-1, 1)).reshape(noisy.shape)  # legacy global scaler
 
     with torch.no_grad():
-        out = model(torch.tensor(x_scaled).to(device))[0].cpu().numpy()  # (4, T)
+        out = model(torch.tensor(x).to(device))[0].cpu().numpy()  # (out_channels, T)
 
-    pred_h1_bg  = out[0]
-    pred_l1_bg  = out[1]
-    pred_h1_sig = out[2]
-    pred_l1_sig = out[3]
+    n_det = len(detectors)
+    bg  = {det: out[i]         for i, det in enumerate(detectors)}
+    sig = {det: out[n_det + i] for i, det in enumerate(detectors)}
 
-    g_hat_h1 = ex["glitchy_h1"] - pred_h1_bg - pred_h1_sig
-    g_hat_l1 = ex["glitchy_l1"] - pred_l1_bg - pred_l1_sig
-
-    # Deglitched strain = input minus predicted glitch → for PE
-    deglitched_h1 = ex["glitchy_h1"] - g_hat_h1
-    deglitched_l1 = ex["glitchy_l1"] - g_hat_l1
-
-    return {
-        **ex,
-        "pred_h1_bg":    pred_h1_bg,
-        "pred_l1_bg":    pred_l1_bg,
-        "pred_h1_sig":   pred_h1_sig,
-        "pred_l1_sig":   pred_l1_sig,
-        "g_hat_h1":      g_hat_h1,
-        "g_hat_l1":      g_hat_l1,
-        "deglitched_h1": deglitched_h1,  # for PE: glitchy - predicted_glitch
-        "deglitched_l1": deglitched_l1,
-    }
+    result = dict(ex)
+    for det in active_detectors:
+        dl = det.lower()
+        pred_bg, pred_sig = bg[det], sig[det]
+        g_hat = ifo_strain[det] - pred_bg - pred_sig
+        result[f"pred_{dl}_bg"]     = pred_bg
+        result[f"pred_{dl}_sig"]    = pred_sig
+        result[f"g_hat_{dl}"]       = g_hat
+        result[f"deglitched_{dl}"]  = ifo_strain[det] - g_hat  # for PE: glitchy - predicted_glitch
+    return result
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
@@ -507,12 +526,28 @@ def main():
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load model
-    model = UNET1D(in_channels=2, out_channels=4, features=args.features).to(device)
-    ckpt  = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    # Load model — config-driven for checkpoints from scripts/train_separation.py
+    # (presence-flag layout, possibly >2 detectors); falls back to the legacy
+    # H1/L1-only, no-flags UNET1D for older checkpoints with no stored config.
+    ckpt   = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    config = ckpt.get("config")
+    if config is not None:
+        detectors, active_detectors = config["detectors"], config["active_detectors"]
+        model = UNET1D(
+            in_channels=config["in_channels"], out_channels=config["out_channels"],
+            features=config["features"], dropout_p=config.get("dropout_p", 0.0),
+            norm=config.get("norm", "bn"), num_groups=config.get("num_groups", 8),
+        ).to(device)
+        use_presence_flags = True
+        print(f"Loaded checkpoint  (epoch {ckpt.get('epoch', '?')})  "
+              f"detectors={detectors} active={active_detectors}")
+    else:
+        detectors = active_detectors = ["H1", "L1"]
+        model = UNET1D(in_channels=2, out_channels=4, features=args.features).to(device)
+        use_presence_flags = False
+        print(f"Loaded checkpoint  (epoch {ckpt.get('epoch', '?')})  legacy H1/L1, no presence flags")
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
-    print(f"Loaded checkpoint  (epoch {ckpt.get('epoch', '?')})")
 
     # Load scaler
     if args.scaler:
@@ -536,7 +571,9 @@ def main():
             print(f"  [{i+1}/{args.n_per_event}] generating ...", end=" ", flush=True)
             ex = generate_bilby_example(event_name, params)
             ex = inject_gengli_glitch(ex)
-            ex = run_separator(ex, model, scaler, device)
+            ex = run_separator(ex, model, scaler, device,
+                                detectors=detectors, active_detectors=active_detectors,
+                                use_presence_flags=use_presence_flags)
             ex.update(compute_mismatches(ex))
 
             print(f"MM signal H1={ex['mismatch_signal_h1']:.1f}%  "
