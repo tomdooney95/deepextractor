@@ -58,6 +58,22 @@ TIME_AXIS = np.linspace(0, DURATION, LENGTH, endpoint=False)
 
 REAL_NOISE_SLICE_START = 8192   # middle 4s of the 8s real-noise samples (32768 -> 16384)
 
+# Default target network-SNR range for --sample-snr mode. 5.0 sits below the
+# conventional network SNR=8 confident-detection threshold, deliberately --
+# the network still needs marginal/sub-threshold examples, not just clean
+# detections. The loudest O3/O4 events reached roughly SNR ~20-30.
+SNR_MIN = 5.0
+SNR_MAX = 50.0
+
+# Probability a sample gets no astrophysical signal injected at all (pure
+# real noise + glitch), so the network sees genuine negative examples rather
+# than only "signal present, however faint." Kept small and non-zero -- see
+# the --sample-snr discussion: with SNR now sampled directly rather than
+# inherited from an uninformative distance prior, most injected signals are
+# meaningfully loud, so explicit no-injection cases are needed for the
+# network to learn what "nothing there" looks like at all.
+NO_INJ_PROB = 0.02
+
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 # O3a/O3b and O4a/O4b are trained as single O3/O4 models (whitening against
@@ -114,14 +130,55 @@ def get_real_noise_and_asd(bg, psd_data, psd_index, rng):
 
 # ── Signal generation ─────────────────────────────────────────────────────────
 
-def generate_whitened_signal(ifos, wfg, rng, dc_grid, dl_grid, asds: dict, start_time: float):
+def generate_whitened_signal(ifos, wfg, rng, dc_grid, dl_grid, asds: dict, start_time: float,
+                              sample_snr: bool = False, snr_min: float = SNR_MIN, snr_max: float = SNR_MAX):
     """Coherent bilby CBC signal, projected through H1+L1, each detector's copy
-    whitened against its own matched real ASD (not bilby's default PSD)."""
+    whitened against its own matched real ASD (not bilby's default PSD).
+
+    sample_snr=False (default): distance is drawn directly from
+    _random_cbc_parameters' uniform-in-comoving-volume prior, which -- since
+    volume scales as d^3 -- concentrates most draws near DMAX_MPC, i.e. most
+    signals end up faint.
+
+    sample_snr=True: draws a target network SNR log-uniformly between
+    snr_min/snr_max (mirrors _inject_glitch's log-uniform SNR convention) and
+    rescales the already-injected, already-whitened signal to hit it exactly.
+    This is exact, not approximate -- strain amplitude is linear in 1/D_L, so
+    SNR is linear in strain, so a flat multiplicative rescale of the output
+    is equivalent to having injected at the corresponding distance in the
+    first place. params['luminosity_distance'] is adjusted to match so it
+    stays physically meaningful, and params['network_snr'] records the draw.
+    """
     params = _random_cbc_parameters(rng, dc_grid, dl_grid, DMAX_MPC, DMIN_MPC, GEOCENT_TIME)
     ifos.set_strain_data_from_zero_noise(
         sampling_frequency=SAMPLE_RATE, duration=SIGNAL_WINDOW_DURATION, start_time=start_time,
     )
+    if sample_snr:
+        # bilby's optimal_SNR (read below) is computed against whatever PSD is
+        # attached to the Interferometer -- by default that's a generic design
+        # curve (aLIGO_O4_high_asd.txt for both H1/L1, wrong for O3 and not
+        # matched to this specific context either way), completely disconnected
+        # from the real ASD this signal is actually whitened against. Point it
+        # at the matched real ASD so "target SNR" means the true SNR relative
+        # to the real noise this sample gets embedded in.
+        for ifo in ifos:
+            asd = asds[ifo.name]
+            ifo.power_spectral_density = bilby.gw.detector.PowerSpectralDensity(
+                frequency_array=np.asarray(asd.frequencies.value, dtype=np.float64),
+                asd_array=np.asarray(asd.value, dtype=np.float64),
+            )
     ifos.inject_signal(waveform_generator=wfg, parameters=params)
+
+    scale = 1.0
+    if sample_snr:
+        network_snr = float(np.sqrt(sum(ifo.meta_data["optimal_SNR"] ** 2 for ifo in ifos)))
+        if np.isfinite(network_snr) and network_snr > 0:
+            target_snr = float(np.exp(rng.uniform(np.log(snr_min), np.log(snr_max))))
+            scale = target_snr / network_snr
+            params["luminosity_distance"] /= scale
+            params["network_snr"] = target_snr
+        else:
+            params["network_snr"] = network_snr  # degenerate draw -- left unscaled, flagged in params
 
     pad = int(MAX_FILTER_DUR * SAMPLE_RATE)
     signal = {}
@@ -129,12 +186,14 @@ def generate_whitened_signal(ifos, wfg, rng, dc_grid, dl_grid, asds: dict, start
         colored = np.asarray(ifo.strain_data.time_domain_strain, dtype=np.float64)
         ts = TimeSeries(colored, sample_rate=SAMPLE_RATE, t0=start_time)
         whitened = ts.whiten(asd=asds[ifo.name], highpass=10.0)
-        signal[ifo.name] = np.asarray(whitened.value, dtype=np.float64)[pad:-pad]
+        signal[ifo.name] = scale * np.asarray(whitened.value, dtype=np.float64)[pad:-pad]
     return signal, params
 
 # ── Per-sample assembly ───────────────────────────────────────────────────────
 
-def generate_one_sample(run_data: dict, ifos, wfg, rng, dc_grid, dl_grid):
+def generate_one_sample(run_data: dict, ifos, wfg, rng, dc_grid, dl_grid,
+                         sample_snr: bool = False, snr_min: float = SNR_MIN, snr_max: float = SNR_MAX,
+                         no_inj_prob: float = NO_INJ_PROB):
     """run_data: {ifo: (bg, psd_data, psd_index)} for H1 and L1."""
     noise, asds, gps_used = {}, {}, {}
     for ifo in IFOS:
@@ -144,7 +203,13 @@ def generate_one_sample(run_data: dict, ifos, wfg, rng, dc_grid, dl_grid):
     # Merger placed at T_INJ within the final 4s output -> within the
     # SIGNAL_WINDOW_DURATION pre-crop window that's (crop + T_INJ) in.
     start_time = GEOCENT_TIME - (MAX_FILTER_DUR + T_INJ)
-    signal, params = generate_whitened_signal(ifos, wfg, rng, dc_grid, dl_grid, asds, start_time)
+    if rng.random() < no_inj_prob:
+        signal = {ifo: np.zeros(LENGTH, dtype=np.float64) for ifo in IFOS}
+        params = {"mass_1": float("nan"), "mass_2": float("nan"), "no_injection": True}
+    else:
+        signal, params = generate_whitened_signal(ifos, wfg, rng, dc_grid, dl_grid, asds, start_time,
+                                                   sample_snr=sample_snr, snr_min=snr_min, snr_max=snr_max)
+        params["no_injection"] = False
 
     noisy = {ifo: noise[ifo] + signal[ifo] for ifo in IFOS}
 
@@ -206,9 +271,16 @@ def plot_sample(sample: dict, run: str, idx: int, out_path: Path):
         ax.tick_params(labelsize=7)
         ax.set_xlabel("Time (s)", fontsize=8)
 
-    m1, m2 = sample["params"]["mass_1"], sample["params"]["mass_2"]
-    fig.suptitle(f"{run}  sample {idx}  |  real O3/O4 noise + bilby {WAVEFORM_APPROXIMANT} signal "
-                 f"(m1={m1:.1f}, m2={m2:.1f} Msun)  |  glitch in {sample['glitch_ifo']}", fontsize=11)
+    if sample["params"].get("no_injection", False):
+        signal_info = "no signal injected (negative example)"
+    else:
+        m1, m2 = sample["params"]["mass_1"], sample["params"]["mass_2"]
+        snr_info = ""
+        if "network_snr" in sample["params"]:
+            snr_info = f"  |  target network SNR={sample['params']['network_snr']:.1f}"
+        signal_info = f"bilby {WAVEFORM_APPROXIMANT} signal (m1={m1:.1f}, m2={m2:.1f} Msun){snr_info}"
+    fig.suptitle(f"{run}  sample {idx}  |  real O3/O4 noise + {signal_info}  |  "
+                 f"glitch in {sample['glitch_ifo']}", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -226,6 +298,16 @@ def parse_args():
     p.add_argument("--n-per-run", type=int, default=3)
     p.add_argument("--out-dir", type=Path, default=Path("real_noise_samples"))
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--sample-snr", action="store_true",
+                    help="Draw a target network SNR log-uniformly and rescale the injected "
+                         "signal to hit it exactly, instead of drawing distance directly from "
+                         "the uniform-in-comoving-volume prior (which skews heavily towards "
+                         "faint, large-distance signals since volume scales as d^3).")
+    p.add_argument("--snr-min", type=float, default=SNR_MIN)
+    p.add_argument("--snr-max", type=float, default=SNR_MAX)
+    p.add_argument("--no-inj-prob", type=float, default=NO_INJ_PROB,
+                    help="Probability a sample gets no astrophysical signal injected at all "
+                         "(pure real noise + glitch), for genuine negative examples.")
     return p.parse_args()
 
 
@@ -252,12 +334,20 @@ def main():
         print(f"\n{'=' * 60}\n{run}\n{'=' * 60}")
         run_data = {ifo: load_run_data(args.backgrounds_dir, args.psd_dir, run, ifo) for ifo in IFOS}
 
+        tag = "_snr" if args.sample_snr else "_dist"
         for idx in range(args.n_per_run):
             print(f"  [{idx + 1}/{args.n_per_run}] generating ...", end=" ", flush=True)
-            sample = generate_one_sample(run_data, ifos, wfg, rng, dc_grid, dl_grid)
-            print(f"m1={sample['params']['mass_1']:.1f} m2={sample['params']['mass_2']:.1f} "
-                  f"glitch_ifo={sample['glitch_ifo']}")
-            plot_sample(sample, run, idx, args.out_dir / f"{run}_sample{idx}.png")
+            sample = generate_one_sample(run_data, ifos, wfg, rng, dc_grid, dl_grid,
+                                          sample_snr=args.sample_snr,
+                                          snr_min=args.snr_min, snr_max=args.snr_max,
+                                          no_inj_prob=args.no_inj_prob)
+            if sample["params"].get("no_injection", False):
+                print(f"no injection (negative example)  glitch_ifo={sample['glitch_ifo']}")
+            else:
+                snr_msg = f" network_snr={sample['params']['network_snr']:.1f}" if args.sample_snr else ""
+                print(f"m1={sample['params']['mass_1']:.1f} m2={sample['params']['mass_2']:.1f} "
+                      f"glitch_ifo={sample['glitch_ifo']}{snr_msg}")
+            plot_sample(sample, run, idx, args.out_dir / f"{run}_sample{idx}{tag}.png")
 
 
 if __name__ == "__main__":
