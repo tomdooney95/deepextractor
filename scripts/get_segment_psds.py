@@ -57,7 +57,10 @@ def save_checkpoint(out_path: Path, done: dict, freqs: np.ndarray):
     payload = {
         'psd_gps_starts': np.array(gps_sorted, dtype=np.float64),
         'psd_freqs':      freqs,
-        'psds':           np.array([done[g] for g in gps_sorted], dtype=np.float32),
+        # float64, not float32: real strain PSD values in the sensitive band
+        # are ~1e-46 to 1e-48, well below float32's smallest representable
+        # magnitude (~1.4e-45) -- float32 silently flushes them to exact zero.
+        'psds':           np.array([done[g] for g in gps_sorted], dtype=np.float64),
     }
     tmp = out_path.with_suffix('.tmp')
     with open(tmp, 'wb') as f:
@@ -121,7 +124,7 @@ def main() -> None:
             for i, gps in enumerate(todo):
                 try:
                     psd = fetch_psd(ifo, gps)
-                    done[gps] = np.asarray(psd.value, dtype=np.float32)
+                    done[gps] = np.asarray(psd.value, dtype=np.float64)
                     if freqs is None:
                         freqs = np.asarray(psd.frequencies.value, dtype=np.float64)
                     since_checkpoint += 1

@@ -193,7 +193,7 @@ def main() -> None:
                         # windows sliced from it), not one per sample.
                         if new:
                             psd_gps_starts.append(context_start)
-                            psds.append(np.asarray(psd.value, dtype=np.float32))
+                            psds.append(np.asarray(psd.value, dtype=np.float64))
                             if psd_freqs is None:
                                 psd_freqs = np.asarray(psd.frequencies.value, dtype=np.float64)
 
@@ -221,7 +221,10 @@ def main() -> None:
                 # sample count) -- match a sample to its PSD via gps_starts.
                 'psd_gps_starts': np.array(psd_gps_starts, dtype=np.float64),
                 'psd_freqs':      psd_freqs if psd_freqs is not None else np.array([]),
-                'psds':           np.array(psds, dtype=np.float32),
+                # float64, not float32: real strain PSD values in the sensitive
+                # band are ~1e-46 to 1e-48, below float32's smallest representable
+                # magnitude (~1.4e-45) -- float32 silently flushes them to zero.
+                'psds':           np.array(psds, dtype=np.float64),
             }
             print(f"\n  Done: {len(backgrounds[run][ifo]['samples'])} samples  |  "
                   f"failed fetches: {failed}")
