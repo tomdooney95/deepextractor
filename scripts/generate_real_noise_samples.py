@@ -23,7 +23,7 @@ Usage
 -----
     python scripts/generate_real_noise_samples.py \\
         --backgrounds-dir . --psd-dir segment_psds/ \\
-        --runs O3a O3b O4a O4b --n-per-run 3 --out-dir real_noise_samples/
+        --runs O3 O4 --n-per-run 3 --out-dir real_noise_samples/
 """
 
 import argparse
@@ -60,11 +60,35 @@ REAL_NOISE_SLICE_START = 8192   # middle 4s of the 8s real-noise samples (32768 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-def load_run_data(backgrounds_dir: Path, psd_dir: Path, run: str, ifo: str):
-    with open(backgrounds_dir / f"backgrounds_{run}.pkl", "rb") as f:
-        bg = pickle.load(f)[run][ifo]
-    with open(psd_dir / f"{run}_{ifo}_psds.pkl", "rb") as f:
+# O3a/O3b and O4a/O4b are trained as single O3/O4 models (whitening against
+# each context's own matched PSD makes them statistically comparable), so
+# their backgrounds and PSD tables are pooled here rather than kept separate.
+SUBRUNS = {"O3": ["O3a", "O3b"], "O4": ["O4a", "O4b"]}
+
+
+def _load_subrun(backgrounds_dir: Path, psd_dir: Path, subrun: str, ifo: str):
+    with open(backgrounds_dir / f"backgrounds_{subrun}.pkl", "rb") as f:
+        bg = pickle.load(f)[subrun][ifo]
+    with open(psd_dir / f"{subrun}_{ifo}_psds.pkl", "rb") as f:
         psd_data = pickle.load(f)
+    return bg, psd_data
+
+
+def load_run_data(backgrounds_dir: Path, psd_dir: Path, run: str, ifo: str):
+    subruns = SUBRUNS.get(run, [run])
+    bgs, psd_datas = zip(*(
+        _load_subrun(backgrounds_dir, psd_dir, subrun, ifo) for subrun in subruns
+    ))
+
+    bg = {
+        "samples": np.concatenate([b["samples"] for b in bgs], axis=0),
+        "gps_starts": np.concatenate([b["gps_starts"] for b in bgs], axis=0),
+    }
+    psd_data = {
+        "psd_freqs": psd_datas[0]["psd_freqs"],  # same fftlength/overlap for every subrun -> same grid
+        "psd_gps_starts": np.concatenate([p["psd_gps_starts"] for p in psd_datas], axis=0),
+        "psds": np.concatenate([p["psds"] for p in psd_datas], axis=0),
+    }
     psd_index = {gps: j for j, gps in enumerate(psd_data["psd_gps_starts"])}
     return bg, psd_data, psd_index
 
@@ -196,7 +220,9 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--backgrounds-dir", type=Path, default=Path("."))
     p.add_argument("--psd-dir", type=Path, default=Path("segment_psds"))
-    p.add_argument("--runs", nargs="+", default=["O3a", "O3b", "O4a", "O4b"])
+    p.add_argument("--runs", nargs="+", default=["O3", "O4"],
+                   help="O3/O4 pool their a/b sub-runs together (see SUBRUNS); "
+                        "pass a bare sub-run name (e.g. O3a) to sample it alone.")
     p.add_argument("--n-per-run", type=int, default=3)
     p.add_argument("--out-dir", type=Path, default=Path("real_noise_samples"))
     p.add_argument("--seed", type=int, default=42)
