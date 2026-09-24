@@ -75,8 +75,20 @@ def build_glitch_segments(tstarts, tends, buffer):
 def whiten_and_slice(ts):
     """
     Whiten a CONTEXT_DURATION-second GWpy TimeSeries and return overlapping
-    SAMPLE_DURATION windows from the usable (edge-trimmed) region.
+    SAMPLE_DURATION windows from the usable (edge-trimmed) region, plus the
+    PSD used to whiten it.
+
+    The PSD is computed separately via .psd() with the same
+    fftlength/overlap/method/window .whiten() uses internally (median-averaged
+    Welch, hann window -- gwpy's defaults for both, matched deliberately here
+    rather than left implicit) -- .whiten() doesn't expose the PSD it computed,
+    so this is a second, cheap call reusing the same parameters, not a
+    reconstruction from the whitened output. Saved so injected signals can
+    later be whitened against the *same* PSD as the noise they're added to,
+    instead of a fixed analytic design curve.
     """
+    psd = ts.psd(fftlength=PSD_DURATION, overlap=PSD_DURATION // 2, method='median', window='hann')
+
     whitened = ts.whiten(fftlength=PSD_DURATION, overlap=PSD_DURATION // 2, highpass=10.0)
     pad = MAX_FILTER_DUR * SAMPLE_RATE
     data = np.array(whitened, dtype=np.float32)[pad:-pad]
@@ -86,7 +98,7 @@ def whiten_and_slice(ts):
         w = data[start : start + SAMPLE_LENGTH]
         if np.isfinite(w).all() and np.abs(w).max() < MAX_AMP:
             windows.append(w)
-    return windows
+    return windows, psd
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -145,6 +157,9 @@ def main() -> None:
 
             samples   = []
             gps_times = []
+            psd_gps_starts = []
+            psds = []
+            psd_freqs = None
             t0 = time.time()
             failed = 0
 
@@ -171,9 +186,16 @@ def main() -> None:
                         if ts.sample_rate.value != SAMPLE_RATE:
                             ts = ts.resample(SAMPLE_RATE)
 
-                        new = whiten_and_slice(ts)
+                        new, psd = whiten_and_slice(ts)
                         samples.extend(new)
                         gps_times.extend([context_start] * len(new))
+                        # One PSD per context (shared by all SAMPLES_PER_CONTEXT
+                        # windows sliced from it), not one per sample.
+                        if new:
+                            psd_gps_starts.append(context_start)
+                            psds.append(np.asarray(psd.value, dtype=np.float32))
+                            if psd_freqs is None:
+                                psd_freqs = np.asarray(psd.frequencies.value, dtype=np.float64)
 
                     except Exception as e:
                         failed += 1
@@ -193,8 +215,13 @@ def main() -> None:
                     )
 
             backgrounds[run][ifo] = {
-                'samples':    np.array(samples[:target],   dtype=np.float32),
-                'gps_starts': np.array(gps_times[:target], dtype=np.float64),
+                'samples':        np.array(samples[:target],   dtype=np.float32),
+                'gps_starts':     np.array(gps_times[:target], dtype=np.float64),
+                # One PSD per context (dedup'd, ~1/SAMPLES_PER_CONTEXT of the
+                # sample count) -- match a sample to its PSD via gps_starts.
+                'psd_gps_starts': np.array(psd_gps_starts, dtype=np.float64),
+                'psd_freqs':      psd_freqs if psd_freqs is not None else np.array([]),
+                'psds':           np.array(psds, dtype=np.float32),
             }
             print(f"\n  Done: {len(backgrounds[run][ifo]['samples'])} samples  |  "
                   f"failed fetches: {failed}")
