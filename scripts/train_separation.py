@@ -142,7 +142,20 @@ def parse_args():
 
     # --- Checkpointing / output ---
     p.add_argument("--out", required=True, help="Output directory for checkpoints and loss arrays")
-    p.add_argument("--resume", default=None, help="Path to a .pth.tar checkpoint to resume from")
+    p.add_argument("--resume", default=None,
+                   help="Path to a .pth.tar checkpoint to resume from -- continues the SAME run "
+                        "(restores optimizer/scheduler state, epoch count, best_val_loss). For "
+                        "training on the same data an earlier invocation was interrupted on.")
+    p.add_argument("--init-from", default=None,
+                   help="Path to a .pth.tar checkpoint to initialize model weights from, for "
+                        "fine-tuning on a DIFFERENT dataset. Unlike --resume, starts a fresh "
+                        "optimizer, scheduler, epoch count, and best_val_loss -- the old "
+                        "optimizer momentum and val-loss scale are tuned to the old dataset "
+                        "and meaningless (or actively misleading) carried over to a new one. "
+                        "--detectors/--features/--norm/--num-groups/--target-signal-only must "
+                        "match whatever this checkpoint was originally trained with, or loading "
+                        "fails with a clear architecture-mismatch error. Mutually exclusive with "
+                        "--resume.")
     p.add_argument("--save-every", type=int, default=10, help="Save loss arrays every N epochs (0 = only at end)")
 
     # --- Device ---
@@ -233,9 +246,34 @@ def main():
         target_signal_only=args.target_signal_only, batch_size=args.batch_size, lr=args.lr,
     )
 
-    # --- Resume ---
+    # --- Resume / fine-tune init ---
+    if args.resume and args.init_from:
+        raise ValueError("--resume and --init-from are mutually exclusive")
+
     start_epoch = 0
     best_val_loss = float("inf")
+    if args.init_from:
+        ckpt = torch.load(args.init_from, map_location=device, weights_only=False)
+        ckpt_config = ckpt.get("config", {})
+        arch_keys = ["detectors", "features", "norm", "num_groups", "in_channels", "out_channels"]
+        mismatches = {
+            k: dict(checkpoint=ckpt_config[k], this_run=run_config[k])
+            for k in arch_keys
+            if k in ckpt_config and ckpt_config[k] != run_config[k]
+        }
+        if mismatches:
+            raise ValueError(
+                f"--init-from checkpoint architecture doesn't match this run's config: {mismatches} "
+                f"-- model.load_state_dict would fail with a shape mismatch. Match "
+                f"--detectors/--features/--norm/--num-groups/--target-signal-only to whatever "
+                f"{args.init_from} was originally trained with."
+            )
+        model.load_state_dict(ckpt["state_dict"])
+        logger.info(
+            "Initialized model weights from %s (was at epoch %d, best_val=%.4e in that run) -- "
+            "starting fresh optimizer/scheduler/epoch-count/best_val_loss for this new dataset.",
+            args.init_from, ckpt.get("epoch", -1), ckpt.get("best_val_loss", float("nan")),
+        )
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["state_dict"])
