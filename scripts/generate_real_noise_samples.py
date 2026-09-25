@@ -39,9 +39,9 @@ from gwpy.frequencyseries import FrequencySeries
 from gwpy.timeseries import TimeSeries
 
 from deepextractor.generation.generate_separation_data import (
-    DMAX_MPC, DMIN_MPC, GEOCENT_TIME, MINIMUM_FREQUENCY, REFERENCE_FREQUENCY,
-    SAMPLE_RATE, WAVEFORM_APPROXIMANT, _build_dc_dl_lookup, _inject_glitch,
-    _random_cbc_parameters,
+    DMAX_MPC, DMIN_MPC, GEOCENT_TIME, MAX_INJECTION_RETRIES, MINIMUM_FREQUENCY,
+    REFERENCE_FREQUENCY, SAMPLE_RATE, WAVEFORM_APPROXIMANT, _build_dc_dl_lookup,
+    _inject_glitch, _random_cbc_parameters,
 )
 
 bilby.core.utils.setup_logger(log_level="warning")
@@ -154,10 +154,6 @@ def generate_whitened_signal(ifos, wfg, rng, dc_grid, dl_grid, asds: dict, start
     first place. params['luminosity_distance'] is adjusted to match so it
     stays physically meaningful, and params['network_snr'] records the draw.
     """
-    params = _random_cbc_parameters(rng, dc_grid, dl_grid, DMAX_MPC, DMIN_MPC, GEOCENT_TIME)
-    ifos.set_strain_data_from_zero_noise(
-        sampling_frequency=SAMPLE_RATE, duration=SIGNAL_WINDOW_DURATION, start_time=start_time,
-    )
     if sample_snr:
         # bilby's optimal_SNR (read below) is computed against whatever PSD is
         # attached to the Interferometer -- by default that's a generic design
@@ -172,7 +168,27 @@ def generate_whitened_signal(ifos, wfg, rng, dc_grid, dl_grid, asds: dict, start
                 frequency_array=np.asarray(asd.frequencies.value, dtype=np.float64),
                 asd_array=np.asarray(asd.value, dtype=np.float64),
             )
-    ifos.inject_signal(waveform_generator=wfg, parameters=params)
+
+    # Low-mass draws can have an in-band signal duration longer than the
+    # injection window, which bilby rejects outright (raises inside
+    # inject_signal). Not rare enough to ignore at full scale -- retry with
+    # fresh parameters, matching generate_separation_data.py's own handling
+    # of the identical failure mode. Redraw the zero-noise baseline on every
+    # attempt too: inject_signal ADDS to the interferometers' current strain
+    # rather than replacing it, so a failed attempt's partial state could
+    # otherwise leak into the retry.
+    for _ in range(MAX_INJECTION_RETRIES):
+        params = _random_cbc_parameters(rng, dc_grid, dl_grid, DMAX_MPC, DMIN_MPC, GEOCENT_TIME)
+        ifos.set_strain_data_from_zero_noise(
+            sampling_frequency=SAMPLE_RATE, duration=SIGNAL_WINDOW_DURATION, start_time=start_time,
+        )
+        try:
+            ifos.inject_signal(waveform_generator=wfg, parameters=params)
+            break
+        except Exception:
+            continue
+    else:
+        raise RuntimeError(f"Failed to inject a valid CBC signal after {MAX_INJECTION_RETRIES} attempts")
 
     scale = 1.0
     if sample_snr:
