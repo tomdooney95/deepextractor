@@ -75,6 +75,32 @@ def _load_or_fit_scaler(path: str, shard_dir: str, detectors: list[str]) -> Chan
     if path.is_file():
         with open(path, "rb") as f:
             scaler = pickle.load(f)
+        # Guard against silently loading a scaler fit on different data --
+        # e.g. two runs accidentally sharing a --scaler path. Older pickles
+        # (saved before fit provenance was recorded) can't be verified, so
+        # they're allowed through with a warning rather than blocked.
+        fit_shard_dir = getattr(scaler, "fit_shard_dir", None)
+        fit_detectors = getattr(scaler, "fit_detectors", None)
+        if fit_shard_dir is None:
+            logger.warning(
+                "Loaded scaler from %s has no recorded fit provenance (older format) -- "
+                "can't verify it was actually fit on %s / %s. Proceeding, but delete it "
+                "and let it refit if you're not sure it's the right one.",
+                path, shard_dir, detectors,
+            )
+        else:
+            mismatches = {}
+            if os.path.abspath(fit_shard_dir) != os.path.abspath(str(shard_dir)):
+                mismatches["shard_dir"] = dict(scaler_was_fit_on=fit_shard_dir, this_run=str(shard_dir))
+            if fit_detectors is not None and list(fit_detectors) != list(detectors):
+                mismatches["detectors"] = dict(scaler_was_fit_on=fit_detectors, this_run=list(detectors))
+            if mismatches:
+                raise ValueError(
+                    f"Scaler at {path} was fit on different data than this run is using: "
+                    f"{mismatches}. Loading it here would silently apply the wrong "
+                    f"normalization. Use a different --scaler path, or delete this file "
+                    f"if it's genuinely stale."
+                )
         logger.info("Loaded scaler from %s (mean_=%s, scale_=%s)", path, scaler.mean_, scaler.scale_)
         return scaler
 

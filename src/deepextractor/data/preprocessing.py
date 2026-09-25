@@ -16,6 +16,15 @@ class ChannelStandardScaler:
         self.mean_ = None
         self.scale_ = None
         self.n_channels_ = None
+        # Provenance recorded by fit_from_separation_shards, so a caller
+        # loading a saved scaler from disk can verify it was actually fit on
+        # the data it's about to be applied to, rather than silently reusing
+        # one fit on a different --shard-dir/--detectors by accident. None
+        # for scalers fit via plain fit()/fit_from_hdf5(), or loaded from a
+        # pickle saved before this field existed.
+        self.fit_shard_dir = None
+        self.fit_split = None
+        self.fit_detectors = None
 
     def fit(self, X: np.ndarray) -> "ChannelStandardScaler":
         """Fit on array X of shape (N, C, T).
@@ -195,6 +204,9 @@ class ChannelStandardScaler:
         self.mean_ = mean_.astype(np.float32)
         self.scale_ = scale_.astype(np.float32)
         self.n_channels_ = len(detectors)
+        self.fit_shard_dir = str(shard_dir)
+        self.fit_split = split
+        self.fit_detectors = list(detectors)
         return self
 
     def _check_fitted(self):
