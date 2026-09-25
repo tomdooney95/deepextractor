@@ -61,9 +61,14 @@ REAL_NOISE_SLICE_START = 8192   # middle 4s of the 8s real-noise samples (32768 
 # Default target network-SNR range for --sample-snr mode. 5.0 sits below the
 # conventional network SNR=8 confident-detection threshold, deliberately --
 # the network still needs marginal/sub-threshold examples, not just clean
-# detections. The loudest O3/O4 events reached roughly SNR ~20-30.
+# detections. The loudest O3/O4 events reached roughly SNR ~20-30; SNR_MAX is
+# pushed well past that deliberately, so the network also sees loud, clean
+# examples of true signal structure (helps it recognize the same structure
+# when it's buried in noise at low SNR) -- log-uniform(5, 150) puts ~12% of
+# draws above SNR=100 and ~20% below SNR=10, so the loud tail is present but
+# a minority, not the bulk of the distribution.
 SNR_MIN = 5.0
-SNR_MAX = 50.0
+SNR_MAX = 150.0
 
 # Probability a sample gets no astrophysical signal injected at all (pure
 # real noise + glitch), so the network sees genuine negative examples rather
