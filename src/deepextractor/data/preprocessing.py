@@ -114,6 +114,17 @@ class ChannelStandardScaler:
                 are always returned shaped ``(len(detectors),)`` either way,
                 so downstream code (:class:`HDF5SeparationDataset`) doesn't
                 need to know which mode was used.
+
+        A detector entirely absent from the shard files (e.g. real-noise
+        datasets generated H1/L1-only, no V1 at all -- distinct from a
+        detector that's present but zeroed via active_detectors at train
+        time) is excluded from the actual fit rather than causing a missing-
+        dataset error: with per_channel=False its slot just gets the same
+        combined value every present channel gets (consistent with the
+        existing broadcast behaviour); with per_channel=True it gets an
+        identity placeholder (mean 0, scale 1), since HDF5SeparationDataset
+        always zeroes that channel post-scaling regardless of what scaler
+        values it's assigned.
         """
         import glob
         import os
@@ -122,8 +133,17 @@ class ChannelStandardScaler:
         if not shard_paths:
             raise FileNotFoundError(f"No separation_shard_*.h5 files found in {shard_dir}")
 
-        c = len(detectors)
-        keys = [f"noisy_{det}_{split}" for det in detectors]
+        with h5py.File(shard_paths[0], "r") as f:
+            present = [i for i, det in enumerate(detectors) if f"noisy_{det}_{split}" in f]
+        if not present:
+            raise FileNotFoundError(
+                f"None of detectors {list(detectors)} have noisy_<det>_{split} datasets "
+                f"in {shard_paths[0]}"
+            )
+        missing = [i for i in range(len(detectors)) if i not in present]
+
+        c = len(present)  # only present detectors contribute to the actual computation
+        keys = [f"noisy_{detectors[i]}_{split}" for i in present]
         reduce_axes = (0, 1, 2) if not per_channel else (0, 2)
 
         # Pass 1: mean (per channel, or one combined scalar broadcast to all channels)
@@ -142,7 +162,7 @@ class ChannelStandardScaler:
                         [f[key][start:end] for key in keys], axis=1,
                     ).astype(np.float64)  # (batch, C, T)
                     sum_ += np.broadcast_to(chunk.sum(axis=reduce_axes), (c,))
-        mean_ = sum_ / count
+        mean_present = sum_ / count
 
         # Pass 2: variance (per channel, or one combined scalar broadcast to all channels)
         sq_sum = np.zeros(c, dtype=np.float64)
@@ -154,14 +174,27 @@ class ChannelStandardScaler:
                     chunk = np.stack(
                         [f[key][start:end] for key in keys], axis=1,
                     ).astype(np.float64)
-                    diff = chunk - mean_[np.newaxis, :, np.newaxis]
+                    diff = chunk - mean_present[np.newaxis, :, np.newaxis]
                     sq_sum += np.broadcast_to((diff ** 2).sum(axis=reduce_axes), (c,))
-        var_ = sq_sum / count
+        var_present = sq_sum / count
+        scale_present = np.sqrt(var_present)
+        scale_present[scale_present == 0] = 1.0
+
+        mean_ = np.zeros(len(detectors), dtype=np.float64)
+        scale_ = np.ones(len(detectors), dtype=np.float64)
+        if per_channel:
+            mean_[present] = mean_present
+            scale_[present] = scale_present
+            # missing detectors keep the mean=0/scale=1 identity placeholder
+        else:
+            # per_channel=False already broadcasts one combined value to
+            # every present channel -- give missing channels that same value.
+            mean_[:] = mean_present[0]
+            scale_[:] = scale_present[0]
 
         self.mean_ = mean_.astype(np.float32)
-        self.scale_ = np.sqrt(var_).astype(np.float32)
-        self.scale_[self.scale_ == 0] = 1.0
-        self.n_channels_ = c
+        self.scale_ = scale_.astype(np.float32)
+        self.n_channels_ = len(detectors)
         return self
 
     def _check_fitted(self):

@@ -306,19 +306,6 @@ class HDF5SeparationDataset(Dataset):
         self.target_signal_only = target_signal_only
         self.transform = transform
 
-        if active_detectors is None:
-            self.active_detectors = None
-            self._presence = None
-        else:
-            unknown = set(active_detectors) - set(self.detectors)
-            if unknown:
-                raise ValueError(f"active_detectors {sorted(unknown)} not in detectors {self.detectors}")
-            self.active_detectors = list(active_detectors)
-            self._presence = torch.tensor(
-                [1.0 if det in self.active_detectors else 0.0 for det in self.detectors],
-                dtype=torch.float32,
-            )
-
         shard_paths = sorted(self.shard_dir.glob("separation_shard_*.h5"))
         if not shard_paths:
             raise FileNotFoundError(
@@ -326,13 +313,56 @@ class HDF5SeparationDataset(Dataset):
             )
         self._shard_paths = [str(p) for p in shard_paths]
 
+        # A detector can be entirely absent from the shard files themselves
+        # (e.g. real-noise datasets generated H1/L1-only, no V1 at all) --
+        # distinct from a detector that's *present* in the data but marked
+        # offline via active_detectors. Checked once against the first shard;
+        # every shard from the same generation run is assumed consistent.
+        with h5py.File(self._shard_paths[0], "r") as f:
+            self._present_detectors = {
+                det for det in self.detectors if f"noisy_{det}_{split}" in f
+            }
+        missing = set(self.detectors) - self._present_detectors
+        if not self._present_detectors:
+            raise FileNotFoundError(
+                f"None of detectors {self.detectors} have noisy_<det>_{split} datasets "
+                f"in {shard_paths[0]}"
+            )
+
+        if active_detectors is None:
+            if missing:
+                raise ValueError(
+                    f"detectors {sorted(missing)} have no data in these shards at all -- "
+                    f"active_detectors must be given explicitly (and must exclude {sorted(missing)}) "
+                    f"so they're masked offline rather than silently fed as zero-filled 'real' data."
+                )
+            self.active_detectors = None
+            self._presence = None
+        else:
+            unknown = set(active_detectors) - set(self.detectors)
+            if unknown:
+                raise ValueError(f"active_detectors {sorted(unknown)} not in detectors {self.detectors}")
+            still_active_but_missing = set(active_detectors) & missing
+            if still_active_but_missing:
+                raise ValueError(
+                    f"active_detectors {sorted(still_active_but_missing)} have no data in these "
+                    f"shards at all -- can't be marked active. Remove them from --active-detectors."
+                )
+            self.active_detectors = list(active_detectors)
+            self._presence = torch.tensor(
+                [1.0 if det in self.active_detectors else 0.0 for det in self.detectors],
+                dtype=torch.float32,
+            )
+
         # Read shapes only (cheap — no data touched) to build a global index.
+        reference_det = next(iter(self._present_detectors))
         shard_lengths = []
         for p in self._shard_paths:
             with h5py.File(p, "r") as f:
-                shard_lengths.append(f[f"noisy_{self.detectors[0]}_{split}"].shape[0])
+                shard_lengths.append(f[f"noisy_{reference_det}_{split}"].shape[0])
         self._cumulative = np.cumsum([0] + shard_lengths)
         self._len = int(self._cumulative[-1])
+        self._length = None  # per-sample time length, lazily read in __getitem__
 
         self._files = {}  # lazy per-worker open: shard_path -> h5py.File
 
@@ -351,6 +381,14 @@ class HDF5SeparationDataset(Dataset):
         local_idx = int(index - self._cumulative[shard_idx])
         return self._shard_paths[shard_idx], local_idx
 
+    def _read(self, f, key_prefix: str, det: str, local_idx: int) -> np.ndarray:
+        if det not in self._present_detectors:
+            if self._length is None:
+                ref = next(iter(self._present_detectors))
+                self._length = f[f"noisy_{ref}_{self.split}"].shape[1]
+            return np.zeros(self._length, dtype=np.float32)
+        return f[f"{key_prefix}_{det}_{self.split}"][local_idx]
+
     def __getitem__(self, index):
         if index < 0 or index >= self._len:
             raise IndexError(index)
@@ -358,7 +396,7 @@ class HDF5SeparationDataset(Dataset):
         f = self._file(shard_path)
 
         noisy = np.stack(
-            [f[f"noisy_{det}_{self.split}"][local_idx] for det in self.detectors], axis=0,
+            [self._read(f, "noisy", det, local_idx) for det in self.detectors], axis=0,
         )
         x = torch.tensor(noisy, dtype=torch.float32)
 
@@ -368,13 +406,13 @@ class HDF5SeparationDataset(Dataset):
             x = (x - mean) / scale
 
         sig = np.stack(
-            [f[f"signal_only_{det}_{self.split}"][local_idx] for det in self.detectors], axis=0,
+            [self._read(f, "signal_only", det, local_idx) for det in self.detectors], axis=0,
         )
         if self.target_signal_only:
             y = torch.tensor(sig, dtype=torch.float32)
         else:
             bg = np.stack(
-                [f[f"background_{det}_{self.split}"][local_idx] for det in self.detectors], axis=0,
+                [self._read(f, "background", det, local_idx) for det in self.detectors], axis=0,
             )
             y = torch.tensor(np.concatenate([bg, sig], axis=0), dtype=torch.float32)
 
