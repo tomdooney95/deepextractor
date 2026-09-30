@@ -53,6 +53,11 @@ pretrained/
 checkpoints/**/*.pth.tar
 checkpoints/**/*.pth
 
+# Fitted input scalers and SLURM logs migrated alongside checkpoints —
+# derived/generated artifacts, not source, same reasoning as checkpoints above.
+scalers/
+logs/
+
 # Real background/noise datasets (get_clean_backgrounds.py output) — large
 # pickles generated on CIT from LIGO frame data, never meant for git.
 backgrounds_*.pkl
