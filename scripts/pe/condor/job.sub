@@ -30,8 +30,12 @@ Log = /home/tom.dooney/deepextractor/scripts/pe/condor/logs/$(label).log
 Error = /home/tom.dooney/deepextractor/scripts/pe/condor/logs/$(label).err
 Output = /home/tom.dooney/deepextractor/scripts/pe/condor/logs/$(label).out
 request_memory = 8GB
-# run.py hardcodes npool=32 in bilby.run_sampler -- match it so the sampler
-# actually gets the parallelism it's configured to use.
-request_cpus = 32
+# DIAGNOSTIC: temporarily back at Harsh's original 16 (not npool=32) to test
+# whether requesting 32 cores is what's routing these jobs to execute nodes
+# without /home mounted (three HOLDs in a row, different nodes each time,
+# same "No such file or directory" opening an absolute, confirmed-correct
+# path -- looks like a shared-filesystem vs. non-shared-filesystem pool
+# split, not a path bug). Revert to 32 once this is confirmed either way.
+request_cpus = 16
 request_disk = 8GB
 Queue 1
