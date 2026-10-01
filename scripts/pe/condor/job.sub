@@ -5,15 +5,17 @@ Executable = /home/tom.dooney/.conda/envs/deepextractor/bin/python
 # only exists in scripts/pe/, not scripts/pe/condor/. This also matches the
 # README's own manual-invocation convention (cd scripts/pe && python run.py).
 initialdir = ..
-# Precautionary MKL fix: system Intel oneAPI MKL (2026.0) can shadow the
-# conda env's own bundled MKL (2023.1.0) via LD_LIBRARY_PATH on CIT and
-# segfault inside libmkl_intel_lp64.so (root-caused via dmesg while
-# debugging evaluate_pe_cases_real.py). run.py doesn't touch gengli/torch,
-# but it's heavy numpy/scipy (bilby + dynesty), so prepend the env's own
-# lib dir rather than find out hours into a nested-sampling run.
-environment = "LD_LIBRARY_PATH=/home/tom.dooney/.conda/envs/deepextractor/lib:$ENV(LD_LIBRARY_PATH)"
+# This schedd has SUBMIT_ALLOW_GETENV = false (blocks `getenv = true`
+# outright), so pass through only what's actually needed instead: HOME
+# (matplotlib/bilby cache dirs) and PATH, plus the precautionary MKL fix --
+# system Intel oneAPI MKL (2026.0) can shadow the conda env's own bundled
+# MKL (2023.1.0) via LD_LIBRARY_PATH on CIT and segfault inside
+# libmkl_intel_lp64.so (root-caused via dmesg while debugging
+# evaluate_pe_cases_real.py); run.py doesn't touch gengli/torch, but it's
+# heavy numpy/scipy (bilby + dynesty), so prepend the env's own lib dir
+# rather than find out hours into a nested-sampling run.
+environment = "HOME=$ENV(HOME) PATH=$ENV(PATH) LD_LIBRARY_PATH=/home/tom.dooney/.conda/envs/deepextractor/lib:$ENV(LD_LIBRARY_PATH)"
 arguments = run.py --seed $(seed) --label $(label) --type $(type) --injection-label $(injection_label) --injection-file $(injection_file) --outdir $(outdir)
-getenv = true
 # Paths below resolve relative to initialdir (scripts/pe/), hence condor/logs/.
 Log = condor/logs/$(label).log
 Error = condor/logs/$(label).err
