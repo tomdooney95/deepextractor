@@ -21,10 +21,14 @@ initialdir = ..
 # rather than find out hours into a nested-sampling run.
 environment = "HOME=$ENV(HOME) PATH=$ENV(PATH) LD_LIBRARY_PATH=/home/tom.dooney/.conda/envs/deepextractor/lib:$ENV(LD_LIBRARY_PATH)"
 arguments = run.py --seed $(seed) --label $(label) --type $(type) --injection-label $(injection_label) --injection-file $(injection_file) --outdir $(outdir)
-# Paths below resolve relative to initialdir (scripts/pe/), hence condor/logs/.
-Log = condor/logs/$(label).log
-Error = condor/logs/$(label).err
-Output = condor/logs/$(label).out
+# Absolute, not initialdir-relative: relative Log/Output/Error combined with
+# initialdir = ".." resolved to a literal unresolved ".../condor/../condor/..."
+# string that failed to open on the execute node (confirmed via HOLD_REASON
+# on two separate submissions, different execute nodes each time -- not an
+# NFS timing fluke). Sidestep the ambiguity entirely with absolute paths.
+Log = /home/tom.dooney/deepextractor/scripts/pe/condor/logs/$(label).log
+Error = /home/tom.dooney/deepextractor/scripts/pe/condor/logs/$(label).err
+Output = /home/tom.dooney/deepextractor/scripts/pe/condor/logs/$(label).out
 request_memory = 8GB
 # run.py hardcodes npool=32 in bilby.run_sampler -- match it so the sampler
 # actually gets the parallelism it's configured to use.
