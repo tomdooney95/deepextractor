@@ -56,6 +56,7 @@ SAMPLE_RATE = 4096
 T           = 4.0
 LENGTH      = int(T * SAMPLE_RATE)   # 16384
 T_INJ       = 3.5                    # merger time within the 4s window
+GLITCH_TIME_OFFSET = -0.1            # glitch centred this far from T_INJ (negative = earlier)
 TIME_AXIS   = np.linspace(0, T, LENGTH, endpoint=False)
 
 # bilby's whitened_time_domain_strain is unit-variance; whitened_snr_scaling's
@@ -294,7 +295,7 @@ def inject_gengli_glitch(ex: dict, inject_h1: bool | None = None) -> dict:
     target = glitchy_h1 if inject_h1 else glitchy_l1
 
     len_g   = len(glitch)
-    id_start = int(T_INJ * SAMPLE_RATE) - len_g // 2
+    id_start = int((T_INJ + GLITCH_TIME_OFFSET) * SAMPLE_RATE) - len_g // 2
     id_start = max(0, min(id_start, LENGTH - len_g))
     target[id_start:id_start + len_g] += glitch
 
@@ -578,7 +579,8 @@ def main():
 
             print(f"MM signal H1={ex['mismatch_signal_h1']:.1f}%  "
                   f"L1={ex['mismatch_signal_l1']:.1f}%  "
-                  f"glitch={ex['mismatch_glitch']:.1f}%")
+                  f"glitch={ex['mismatch_glitch']:.1f}%  "
+                  f"(SNR H1={ex['snr_h1']:.1f} L1={ex['snr_l1']:.1f} glitch={ex['glitch_snr']:.1f})")
 
             results[event_name].append(ex)
             all_examples.append(ex)

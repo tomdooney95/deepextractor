@@ -281,7 +281,8 @@ def main():
 
             print(f"MM signal H1={ex['mismatch_signal_h1']:.1f}%  "
                   f"L1={ex['mismatch_signal_l1']:.1f}%  "
-                  f"glitch={ex['mismatch_glitch']:.1f}%")
+                  f"glitch={ex['mismatch_glitch']:.1f}%  "
+                  f"(SNR H1={ex['snr_h1']:.1f} L1={ex['snr_l1']:.1f} glitch={ex['glitch_snr']:.1f})")
 
             results[event_name].append(ex)
             all_examples.append(ex)
