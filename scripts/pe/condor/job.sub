@@ -1,48 +1,48 @@
 Universe   = vanilla
 # Required by this schedd's LDG accounting policy (SCHEDD:2:Invalid value
-# for search tag: None without it). Trying the detchar/glitchpe tag first;
-# swap if the schedd rejects it as an unrecognized group.
+# for search tag: None without it).
 accounting_group = ligo.dev.o5.detchar.glitchpe.lalinference
 accounting_group_user = tom.dooney
-Executable = /home/tom.dooney/.conda/envs/deepextractor/bin/python
-# initialdir = scripts/pe/ (one level up from this condor/ dir) -- run.py
-# opens './aLIGO_O4_high_asd.txt' relative to the process CWD, and that file
-# only exists in scripts/pe/, not scripts/pe/condor/. This also matches the
-# README's own manual-invocation convention (cd scripts/pe && python run.py).
+
+# cluster.ldas.cit's execute pool does NOT NFS-mount /home (confirmed: a
+# TARGET.UidDomain == MY.UidDomain requirements test matched 0 of 3383
+# slots across 2300 machines -- not a small excludable subset, this is how
+# the whole pool works). The IGWN-standard answer is CVMFS, which *is*
+# mounted pool-wide, plus HTCondor's own file-transfer for everything else
+# (same pattern as a colleague's working container-universe submit file:
+# relative Log/Output/Error nested inside a transferred outdir, small
+# inputs listed explicitly, nothing assumed to exist on a shared filesystem
+# at the execute side). run.py only needs plain bilby/dynesty/numpy/
+# matplotlib -- no custom deepextractor/gengli/torch code -- so the
+# generic CVMFS IGWN stack covers it without needing a custom container
+# image. Confirmed present: igwn-py311 has bilby 2.6.0, dynesty 2.1.5.
+Executable = /cvmfs/software.igwn.org/conda/envs/igwn-py311/bin/python
+transfer_executable = false
+
+# Only used to resolve the relative transfer_input_files paths below at
+# SUBMIT time (ldas-pcdev2 does have /home) -- irrelevant to the execute
+# side, which runs entirely out of its own sandbox regardless.
 initialdir = ..
-# This schedd has SUBMIT_ALLOW_GETENV = false (blocks `getenv = true`
-# outright), so pass through only what's actually needed instead: HOME
-# (matplotlib/bilby cache dirs) and PATH, plus the precautionary MKL fix --
-# system Intel oneAPI MKL (2026.0) can shadow the conda env's own bundled
-# MKL (2023.1.0) via LD_LIBRARY_PATH on CIT and segfault inside
-# libmkl_intel_lp64.so (root-caused via dmesg while debugging
-# evaluate_pe_cases_real.py); run.py doesn't touch gengli/torch, but it's
-# heavy numpy/scipy (bilby + dynesty), so prepend the env's own lib dir
-# rather than find out hours into a nested-sampling run.
-environment = "HOME=$ENV(HOME) PATH=$ENV(PATH) LD_LIBRARY_PATH=/home/tom.dooney/.conda/envs/deepextractor/lib:$ENV(LD_LIBRARY_PATH)"
-arguments = run.py --seed $(seed) --label $(label) --type $(type) --injection-label $(injection_label) --injection-file $(injection_file) --outdir $(outdir)
-# CIT's cluster.ldas.cit pool spans nodes that NFS-mount /home (same as the
-# submit host) and a broader pool that doesn't -- confirmed via repeated
-# HOLDs with "No such file or directory" on a verified-correct absolute
-# path, on a different execute node each time, not fixed by request_cpus.
-# This is a known IGWN pattern (home dirs generally aren't mounted on condor
-# worker nodes); pin matchmaking to nodes sharing the submit machine's
-# filesystem/UID domain, where /home (and the conda env Executable lives
-# in) is actually visible.
-requirements = (TARGET.UidDomain == MY.UidDomain) && (TARGET.FileSystemDomain == MY.FileSystemDomain)
-# Absolute, not initialdir-relative: relative Log/Output/Error combined with
-# initialdir = ".." resolved to a literal unresolved ".../condor/../condor/..."
-# string that failed to open on the execute node (confirmed via HOLD_REASON
-# on two separate submissions, different execute nodes each time -- not an
-# NFS timing fluke). Sidestep the ambiguity entirely with absolute paths.
-Log = /home/tom.dooney/deepextractor/scripts/pe/condor/logs/$(label).log
-Error = /home/tom.dooney/deepextractor/scripts/pe/condor/logs/$(label).err
-Output = /home/tom.dooney/deepextractor/scripts/pe/condor/logs/$(label).out
+
+environment = "HOME=$ENV(HOME)"
+
+should_transfer_files   = YES
+when_to_transfer_output = ON_EXIT_OR_EVICT
+transfer_input_files    = run.py, utils.py, aLIGO_O4_high_asd.txt, $(injection_file_src)
+transfer_output_files   = $(outdir)
+
+arguments = run.py --seed $(seed) --label $(label) --type $(type) --injection-label $(injection_label) --injection-file $(injection_file_name) --outdir $(outdir)
+
+# Relative, nested inside the transferred outdir -- NOT absolute /home
+# paths. Absolute paths were the earlier failure mode: HTCondor tried to
+# open them directly on the execute node's (nonexistent) /home mount.
+Log    = $(outdir)/condor.log
+Output = $(outdir)/condor.out
+Error  = $(outdir)/condor.err
+
 request_memory = 8GB
 # run.py hardcodes npool=32 in bilby.run_sampler -- match it so the sampler
-# actually gets the parallelism it's configured to use. (Ruled out as the
-# cause of the HOLDs above -- 16 held identically -- so back to matching
-# npool.)
+# actually gets the parallelism it's configured to use.
 request_cpus = 32
 request_disk = 8GB
 Queue 1

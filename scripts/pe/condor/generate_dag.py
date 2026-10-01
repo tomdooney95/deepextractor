@@ -7,9 +7,21 @@ those hit an immediate exit() in setup_priors. Run from anywhere; it only
 writes scripts/pe/condor/job.dag by default; pass --events/--out for a
 smaller sanity-check DAG, e.g.:
     python generate_dag.py --events GW150914 --out job_sanity_check.dag
+
+job.sub runs each job in an execute-side sandbox (cluster.ldas.cit doesn't
+NFS-mount /home) via HTCondor file transfer, so each job needs two distinct
+references to the injection pickle: injection_file_src, a path resolvable
+from job.sub's initialdir (scripts/pe/) at SUBMIT time, for staging it in;
+and injection_file_name, just the basename, which is what run.py actually
+sees once the file lands flat in the sandbox. outdir is likewise a flat,
+job-unique directory name (no subdirectories) -- bilby creates it inside
+the sandbox, and job.sub's transfer_output_files ships the whole thing
+back on exit, landing in scripts/pe/<outdir>/ (job.sub's initialdir) once
+the job completes.
 """
 
 import argparse
+from pathlib import Path
 
 ALL_EVENTS = [
     "GW150914", "GW190412", "GW190521", "GW190828",
@@ -19,9 +31,9 @@ ALL_EVENTS = [
 
 TYPES = ["control", "dirty", "prediction"]
 
-# Paths below are relative to job.sub's initialdir (scripts/pe/), not to
-# this condor/ dir where job.dag itself lives.
-INJECTION_FILE = "../../PE_results/simulated_separation_v1/pe_cases_n10.pkl"
+# Resolvable from job.sub's initialdir (scripts/pe/) at submit time.
+INJECTION_FILE_SRC = "../../PE_results/simulated_separation_v1/pe_cases_n10.pkl"
+INJECTION_FILE_NAME = Path(INJECTION_FILE_SRC).name
 SEED = "2026"
 
 
@@ -41,11 +53,12 @@ def main():
     for event in events:
         for ptype in TYPES:
             job_name = f"{event}_{ptype}"
-            outdir = f"../../PE_results/simulated_pe/{event}/{ptype}"
+            outdir = f"{job_name}_outdir"
             lines.append(f"JOB {job_name} job.sub")
             lines.append(
                 f'VARS {job_name} seed="{SEED}" label="{job_name}" type="{ptype}" '
-                f'injection_label="{event}" injection_file="{INJECTION_FILE}" outdir="{outdir}"'
+                f'injection_label="{event}" injection_file_src="{INJECTION_FILE_SRC}" '
+                f'injection_file_name="{INJECTION_FILE_NAME}" outdir="{outdir}"'
             )
             lines.append(f"RETRY {job_name} 2")
             lines.append("")
