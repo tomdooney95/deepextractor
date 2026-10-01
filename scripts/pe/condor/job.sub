@@ -1,4 +1,9 @@
 Universe   = vanilla
+# Required by this schedd's LDG accounting policy (SCHEDD:2:Invalid value
+# for search tag: None without it). Trying the detchar/glitchpe tag first;
+# swap if the schedd rejects it as an unrecognized group.
+accounting_group = ligo.dev.o5.detchar.glitchpe.lalinference
+accounting_group_user = tom.dooney
 Executable = /home/tom.dooney/.conda/envs/deepextractor/bin/python
 # initialdir = scripts/pe/ (one level up from this condor/ dir) -- run.py
 # opens './aLIGO_O4_high_asd.txt' relative to the process CWD, and that file
