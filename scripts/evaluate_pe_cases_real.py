@@ -138,6 +138,14 @@ def generate_real_example(event_name: str, params: dict, pool: dict, test_indice
         "signal_l1":        signal["L1"],
         "gps_used_h1":      gps_used["H1"],
         "gps_used_l1":      gps_used["L1"],
+        # Matched real ASD each detector was actually whitened against above
+        # (get_segment_psds.py's per-context Welch PSD, not a generic design
+        # curve) -- carried through so PE can recolor/re-set bilby's own PSD
+        # with the SAME ASD rather than the simulated case's generic file.
+        "asd_freqs_h1":     np.asarray(asds["H1"].frequencies.value, dtype=np.float64),
+        "asd_h1":           np.asarray(asds["H1"].value, dtype=np.float64),
+        "asd_freqs_l1":     np.asarray(asds["L1"].frequencies.value, dtype=np.float64),
+        "asd_l1":           np.asarray(asds["L1"].value, dtype=np.float64),
     }
 
 # ── Plotting (same as evaluate_pe_cases.py, title adjusted for real noise) ────
