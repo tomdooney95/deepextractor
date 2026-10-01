@@ -1,14 +1,26 @@
 Universe   = vanilla
-# TODO: point this at your own deepextractor conda env's python binary on
-# whichever cluster you're submitting from (was Harsh's personal Mac path
-# in the original repo -- won't resolve on CIT/Snellius as-is).
-Executable = /path/to/your/conda/envs/deepextractor/bin/python
-arguments = ../run.py --seed $(seed) --label $(label)
+Executable = /home/tom.dooney/.conda/envs/deepextractor/bin/python
+# initialdir = scripts/pe/ (one level up from this condor/ dir) -- run.py
+# opens './aLIGO_O4_high_asd.txt' relative to the process CWD, and that file
+# only exists in scripts/pe/, not scripts/pe/condor/. This also matches the
+# README's own manual-invocation convention (cd scripts/pe && python run.py).
+initialdir = ..
+# Precautionary MKL fix: system Intel oneAPI MKL (2026.0) can shadow the
+# conda env's own bundled MKL (2023.1.0) via LD_LIBRARY_PATH on CIT and
+# segfault inside libmkl_intel_lp64.so (root-caused via dmesg while
+# debugging evaluate_pe_cases_real.py). run.py doesn't touch gengli/torch,
+# but it's heavy numpy/scipy (bilby + dynesty), so prepend the env's own
+# lib dir rather than find out hours into a nested-sampling run.
+environment = "LD_LIBRARY_PATH=/home/tom.dooney/.conda/envs/deepextractor/lib:$ENV(LD_LIBRARY_PATH)"
+arguments = run.py --seed $(seed) --label $(label) --type $(type) --injection-label $(injection_label) --injection-file $(injection_file) --outdir $(outdir)
 getenv = true
-Log = ./logs/$(label).log
-Error = ./logs/$(label).err
-Output = ./logs/$(label).out
+# Paths below resolve relative to initialdir (scripts/pe/), hence condor/logs/.
+Log = condor/logs/$(label).log
+Error = condor/logs/$(label).err
+Output = condor/logs/$(label).out
 request_memory = 8GB
-request_cpus = 16
+# run.py hardcodes npool=32 in bilby.run_sampler -- match it so the sampler
+# actually gets the parallelism it's configured to use.
+request_cpus = 32
 request_disk = 8GB
 Queue 1

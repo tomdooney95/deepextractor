@@ -1,4 +1,134 @@
-# DAGMan workflow for parameter estimation job
+# DAGMan workflow: simulated-case control/dirty/prediction PE sweep
 
-JOB my_run job.sub
-VARS my_run seed="2026" label="deleteme"
+JOB GW150914_control job.sub
+VARS GW150914_control seed="2026" label="GW150914_control" type="control" injection_label="GW150914" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW150914/control"
+RETRY GW150914_control 2
+
+JOB GW150914_dirty job.sub
+VARS GW150914_dirty seed="2026" label="GW150914_dirty" type="dirty" injection_label="GW150914" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW150914/dirty"
+RETRY GW150914_dirty 2
+
+JOB GW150914_prediction job.sub
+VARS GW150914_prediction seed="2026" label="GW150914_prediction" type="prediction" injection_label="GW150914" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW150914/prediction"
+RETRY GW150914_prediction 2
+
+JOB GW190412_control job.sub
+VARS GW190412_control seed="2026" label="GW190412_control" type="control" injection_label="GW190412" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW190412/control"
+RETRY GW190412_control 2
+
+JOB GW190412_dirty job.sub
+VARS GW190412_dirty seed="2026" label="GW190412_dirty" type="dirty" injection_label="GW190412" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW190412/dirty"
+RETRY GW190412_dirty 2
+
+JOB GW190412_prediction job.sub
+VARS GW190412_prediction seed="2026" label="GW190412_prediction" type="prediction" injection_label="GW190412" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW190412/prediction"
+RETRY GW190412_prediction 2
+
+JOB GW190521_control job.sub
+VARS GW190521_control seed="2026" label="GW190521_control" type="control" injection_label="GW190521" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW190521/control"
+RETRY GW190521_control 2
+
+JOB GW190521_dirty job.sub
+VARS GW190521_dirty seed="2026" label="GW190521_dirty" type="dirty" injection_label="GW190521" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW190521/dirty"
+RETRY GW190521_dirty 2
+
+JOB GW190521_prediction job.sub
+VARS GW190521_prediction seed="2026" label="GW190521_prediction" type="prediction" injection_label="GW190521" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW190521/prediction"
+RETRY GW190521_prediction 2
+
+JOB GW190828_control job.sub
+VARS GW190828_control seed="2026" label="GW190828_control" type="control" injection_label="GW190828" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW190828/control"
+RETRY GW190828_control 2
+
+JOB GW190828_dirty job.sub
+VARS GW190828_dirty seed="2026" label="GW190828_dirty" type="dirty" injection_label="GW190828" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW190828/dirty"
+RETRY GW190828_dirty 2
+
+JOB GW190828_prediction job.sub
+VARS GW190828_prediction seed="2026" label="GW190828_prediction" type="prediction" injection_label="GW190828" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW190828/prediction"
+RETRY GW190828_prediction 2
+
+JOB GW200129_control job.sub
+VARS GW200129_control seed="2026" label="GW200129_control" type="control" injection_label="GW200129" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW200129/control"
+RETRY GW200129_control 2
+
+JOB GW200129_dirty job.sub
+VARS GW200129_dirty seed="2026" label="GW200129_dirty" type="dirty" injection_label="GW200129" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW200129/dirty"
+RETRY GW200129_dirty 2
+
+JOB GW200129_prediction job.sub
+VARS GW200129_prediction seed="2026" label="GW200129_prediction" type="prediction" injection_label="GW200129" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW200129/prediction"
+RETRY GW200129_prediction 2
+
+JOB GW200224_control job.sub
+VARS GW200224_control seed="2026" label="GW200224_control" type="control" injection_label="GW200224" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW200224/control"
+RETRY GW200224_control 2
+
+JOB GW200224_dirty job.sub
+VARS GW200224_dirty seed="2026" label="GW200224_dirty" type="dirty" injection_label="GW200224" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW200224/dirty"
+RETRY GW200224_dirty 2
+
+JOB GW200224_prediction job.sub
+VARS GW200224_prediction seed="2026" label="GW200224_prediction" type="prediction" injection_label="GW200224" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW200224/prediction"
+RETRY GW200224_prediction 2
+
+JOB GW191109_control job.sub
+VARS GW191109_control seed="2026" label="GW191109_control" type="control" injection_label="GW191109" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW191109/control"
+RETRY GW191109_control 2
+
+JOB GW191109_dirty job.sub
+VARS GW191109_dirty seed="2026" label="GW191109_dirty" type="dirty" injection_label="GW191109" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW191109/dirty"
+RETRY GW191109_dirty 2
+
+JOB GW191109_prediction job.sub
+VARS GW191109_prediction seed="2026" label="GW191109_prediction" type="prediction" injection_label="GW191109" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW191109/prediction"
+RETRY GW191109_prediction 2
+
+JOB GW200225_control job.sub
+VARS GW200225_control seed="2026" label="GW200225_control" type="control" injection_label="GW200225" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW200225/control"
+RETRY GW200225_control 2
+
+JOB GW200225_dirty job.sub
+VARS GW200225_dirty seed="2026" label="GW200225_dirty" type="dirty" injection_label="GW200225" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW200225/dirty"
+RETRY GW200225_dirty 2
+
+JOB GW200225_prediction job.sub
+VARS GW200225_prediction seed="2026" label="GW200225_prediction" type="prediction" injection_label="GW200225" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW200225/prediction"
+RETRY GW200225_prediction 2
+
+JOB GW231028_control job.sub
+VARS GW231028_control seed="2026" label="GW231028_control" type="control" injection_label="GW231028" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW231028/control"
+RETRY GW231028_control 2
+
+JOB GW231028_dirty job.sub
+VARS GW231028_dirty seed="2026" label="GW231028_dirty" type="dirty" injection_label="GW231028" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW231028/dirty"
+RETRY GW231028_dirty 2
+
+JOB GW231028_prediction job.sub
+VARS GW231028_prediction seed="2026" label="GW231028_prediction" type="prediction" injection_label="GW231028" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW231028/prediction"
+RETRY GW231028_prediction 2
+
+JOB GW231226_control job.sub
+VARS GW231226_control seed="2026" label="GW231226_control" type="control" injection_label="GW231226" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW231226/control"
+RETRY GW231226_control 2
+
+JOB GW231226_dirty job.sub
+VARS GW231226_dirty seed="2026" label="GW231226_dirty" type="dirty" injection_label="GW231226" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW231226/dirty"
+RETRY GW231226_dirty 2
+
+JOB GW231226_prediction job.sub
+VARS GW231226_prediction seed="2026" label="GW231226_prediction" type="prediction" injection_label="GW231226" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW231226/prediction"
+RETRY GW231226_prediction 2
+
+JOB GW240104_control job.sub
+VARS GW240104_control seed="2026" label="GW240104_control" type="control" injection_label="GW240104" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW240104/control"
+RETRY GW240104_control 2
+
+JOB GW240104_dirty job.sub
+VARS GW240104_dirty seed="2026" label="GW240104_dirty" type="dirty" injection_label="GW240104" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW240104/dirty"
+RETRY GW240104_dirty 2
+
+JOB GW240104_prediction job.sub
+VARS GW240104_prediction seed="2026" label="GW240104_prediction" type="prediction" injection_label="GW240104" injection_file="../../PE_results/simulated_separation_v1/pe_cases_n10.pkl" outdir="../../PE_results/simulated_pe/GW240104/prediction"
+RETRY GW240104_prediction 2
+
