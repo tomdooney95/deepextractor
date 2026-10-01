@@ -57,7 +57,7 @@ T           = 4.0
 LENGTH      = int(T * SAMPLE_RATE)   # 16384
 T_INJ       = 3.5                    # merger time within the 4s window
 GLITCH_TIME_OFFSET = -0.05           # glitch centred this far from T_INJ (negative = earlier)
-GLITCH_SNR_FLOOR = 8.0               # glitch SNR floor, regardless of how quiet the signal is
+GLITCH_SNR_FLOOR = 10.0              # glitch SNR floor, regardless of how quiet the signal is
 TIME_AXIS   = np.linspace(0, T, LENGTH, endpoint=False)
 
 # bilby's whitened_time_domain_strain is unit-variance; whitened_snr_scaling's
