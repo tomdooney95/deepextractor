@@ -266,7 +266,7 @@ def main():
     print(f"Loaded scaler from {args.scaler}")
 
     results = {ev: [] for ev in EVENTS}
-    all_examples = []
+    example_per_event = []  # one representative realisation per event, for the separation plot
 
     for event_name, params in EVENTS.items():
         print(f"\n{event_name}  ({args.n_per_event} realisations)")
@@ -285,7 +285,8 @@ def main():
                   f"(SNR H1={ex['snr_h1']:.1f} L1={ex['snr_l1']:.1f} glitch={ex['glitch_snr']:.1f})")
 
             results[event_name].append(ex)
-            all_examples.append(ex)
+            if i == 0:
+                example_per_event.append(ex)
 
     pkl_path = out_dir / f"pe_cases_real_{args.run}_n{args.n_per_event}.pkl"
     with open(pkl_path, "wb") as f:
@@ -295,7 +296,7 @@ def main():
     print("\nSaving plots ...")
     sep_dir = out_dir / "separation"
     sep_dir.mkdir(exist_ok=True)
-    for ex in all_examples:
+    for ex in example_per_event:
         plot_separation_event(ex, sep_dir / f"{ex['event']}.png")
     plot_mismatch_summary(results, out_dir / f"mismatch_summary_real_{args.run}_n{args.n_per_event}.png")
 

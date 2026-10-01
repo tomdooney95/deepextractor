@@ -56,7 +56,8 @@ SAMPLE_RATE = 4096
 T           = 4.0
 LENGTH      = int(T * SAMPLE_RATE)   # 16384
 T_INJ       = 3.5                    # merger time within the 4s window
-GLITCH_TIME_OFFSET = -0.1            # glitch centred this far from T_INJ (negative = earlier)
+GLITCH_TIME_OFFSET = -0.05           # glitch centred this far from T_INJ (negative = earlier)
+GLITCH_SNR_FLOOR = 8.0               # glitch SNR floor, regardless of how quiet the signal is
 TIME_AXIS   = np.linspace(0, T, LENGTH, endpoint=False)
 
 # bilby's whitened_time_domain_strain is unit-variance; whitened_snr_scaling's
@@ -276,7 +277,10 @@ def generate_bilby_example(event_name: str, params: dict) -> dict:
 
 
 def inject_gengli_glitch(ex: dict, inject_h1: bool | None = None) -> dict:
-    """Inject a gengli glitch at the SNR of the louder detector."""
+    """Inject a gengli glitch at the SNR of the louder detector, floored at
+    GLITCH_SNR_FLOOR -- a quiet signal shouldn't produce a barely-there
+    glitch too, since the point is to actually test separation under a
+    genuine glitch, not one too faint to matter."""
     import gengli
 
     if inject_h1 is None:
@@ -287,7 +291,7 @@ def inject_gengli_glitch(ex: dict, inject_h1: bool | None = None) -> dict:
     raw_glitch = np.array(g.get_glitch()).squeeze()
     raw_glitch = raw_glitch - raw_glitch.mean()
 
-    glitch_snr = max(ex["snr_h1"], ex["snr_l1"]) / BILBY_SNR_NORM
+    glitch_snr = max(ex["snr_h1"], ex["snr_l1"], GLITCH_SNR_FLOOR) / BILBY_SNR_NORM
     glitch = whitened_snr_scaling(raw_glitch, snr=glitch_snr)
 
     glitchy_h1 = ex["whitened_data_h1"].copy()
@@ -564,7 +568,7 @@ def main():
 
     # ── Generate ──────────────────────────────────────────────────────────────
     results = {ev: [] for ev in EVENTS}
-    all_examples = []  # for the time-series separation plot
+    example_per_event = []  # one representative realisation per event, for the separation plot
 
     for event_name, params in EVENTS.items():
         print(f"\n{event_name}  ({args.n_per_event} realisations)")
@@ -583,7 +587,8 @@ def main():
                   f"(SNR H1={ex['snr_h1']:.1f} L1={ex['snr_l1']:.1f} glitch={ex['glitch_snr']:.1f})")
 
             results[event_name].append(ex)
-            all_examples.append(ex)
+            if i == 0:
+                example_per_event.append(ex)
 
     # ── Save pickle ───────────────────────────────────────────────────────────
     pkl_path = out_dir / f"pe_cases_n{args.n_per_event}.pkl"
@@ -595,7 +600,7 @@ def main():
     print("\nSaving plots ...")
     sep_dir = out_dir / "separation"
     sep_dir.mkdir(exist_ok=True)
-    for ex in all_examples:
+    for ex in example_per_event:
         plot_separation_event(ex, sep_dir / f"{ex['event']}.png")
     plot_mismatch_summary(results, out_dir / f"mismatch_summary_n{args.n_per_event}.png")
 
