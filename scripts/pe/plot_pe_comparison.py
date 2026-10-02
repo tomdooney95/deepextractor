@@ -1,11 +1,13 @@
 """Overlay control/dirty/prediction posteriors from run.py on one corner plot.
 
-Reads bilby *_result.json files (one per --type run.py was given) and uses
-bilby.result.plot_multiple to combine them into a single corner plot, so
-the effect of the glitch -- and DeepExtractor's removal of it -- on
-parameter recovery is directly visible in one figure. Any subset of
-control/dirty/prediction (at least 2) can be given, e.g. to check progress
-before all three have finished.
+Reads bilby *_result.json files (one per --type run.py was given) and
+overlays their posteriors on a single corner plot via the `corner` package
+directly (reusing one Figure across calls, one call per result, each a
+different colour) -- bilby.result.plot_multiple's own truths-forwarding
+turned out not to reliably render reference lines, so this calls corner.
+corner() explicitly instead, where `truths` is well-defined and documented.
+Any subset of control/dirty/prediction (at least 2) can be given, e.g. to
+check progress before all three have finished.
 
 Meant to run interactively on ldas-pcdev2 (not via Condor): the execute
 pool's sandboxed HOME is what broke run.py's own corner-plot step (see the
@@ -38,11 +40,16 @@ corner or a different subset).
 import argparse
 
 import bilby
+import corner
+import matplotlib.lines as mlines
+import numpy as np
 
 DEFAULT_PARAMETERS = [
     "chirp_mass", "mass_ratio", "luminosity_distance", "geocent_time",
     "ra", "dec", "theta_jn",
 ]
+
+COLOURS = ["tab:blue", "tab:orange", "tab:green"]
 
 RUNS = [
     ("control", "Control (no glitch)"),
@@ -72,11 +79,11 @@ def main():
 
     results = [bilby.result.read_in_result(filename=path) for _, _, path in given]
     labels = [label for _, label, _ in given]
+    colours = COLOURS[:len(results)]
 
     # All runs share the same injected event parameters (run.py passes
     # injection_parameters into bilby.run_sampler(), which stores them on
-    # the Result) -- pull truth values from whichever result has them, for
-    # whichever parameters we're actually plotting.
+    # the Result) -- pull truth values from whichever result has them.
     injection_parameters = next(
         (r.injection_parameters for r in results if r.injection_parameters), None
     )
@@ -84,21 +91,33 @@ def main():
         print("WARNING: no injection_parameters found on any result -- plotting without truth markers")
         truths = None
     else:
-        # corner's truths takes a plain list ordered to match `parameters`,
-        # not a dict -- a dict was silently not rendering any truth lines.
         missing = [p for p in args.parameters if p not in injection_parameters]
         if missing:
             print(f"WARNING: no injected value for {missing} -- leaving those truth markers blank")
         truths = [injection_parameters.get(p) for p in args.parameters]
 
-    bilby.result.plot_multiple(
-        results,
-        filename=args.out,
-        labels=labels,
-        parameters=args.parameters,
-        truths=truths,
-        save=True,
-    )
+    fig = None
+    for i, (result, colour) in enumerate(zip(results, colours)):
+        samples = np.array([result.posterior[p].values for p in args.parameters]).T
+        fig = corner.corner(
+            samples,
+            labels=args.parameters,
+            fig=fig,
+            color=colour,
+            truths=truths if i == 0 else None,
+            truth_color="black",
+            plot_datapoints=False,
+            plot_density=False,
+            levels=(0.68, 0.95),
+            hist_kwargs=dict(density=True),
+        )
+
+    handles = [mlines.Line2D([], [], color=c, label=l) for c, l in zip(colours, labels)]
+    if truths is not None:
+        handles.append(mlines.Line2D([], [], color="black", label="Injected (truth)"))
+    fig.legend(handles=handles, loc="upper right", fontsize=10)
+
+    fig.savefig(args.out, dpi=150, bbox_inches="tight")
     print(f"Saved {args.out} ({', '.join(labels)})")
 
 
