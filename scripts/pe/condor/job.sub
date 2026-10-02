@@ -16,7 +16,18 @@ accounting_group_user = tom.dooney
 # matplotlib -- no custom deepextractor/gengli/torch code -- so the
 # generic CVMFS IGWN stack covers it without needing a custom container
 # image. Confirmed present: igwn-py311 has bilby 2.6.0, dynesty 2.1.5.
-Executable = /cvmfs/software.igwn.org/conda/envs/igwn-py311/bin/python
+# Executable is bash, not python directly: python (and anything it
+# imports -- matplotlib, and critically arviz, pulled in by corner via
+# result.plot_corner() at the very end of run.py) needs a writable HOME.
+# $ENV(HOME) (tried previously) resolves at SUBMIT time on ldas-pcdev2,
+# producing /home/tom.dooney -- a path that doesn't exist on the execute
+# side, and HOME inherited that way crashed the FIRST sanity-check run
+# with a PermissionError in arviz's cache-dir mkdir, DESPITE nested
+# sampling itself having already completed successfully (6h+ of real
+# compute, thrown away by DAGMan's retry since the process still exited
+# nonzero). Only a real shell on the execute side can resolve the
+# sandbox's own (always-writable) path at runtime, hence the wrapper.
+Executable = /bin/bash
 transfer_executable = false
 
 # Only used to resolve the relative transfer_input_files paths below at
@@ -24,14 +35,12 @@ transfer_executable = false
 # side, which runs entirely out of its own sandbox regardless.
 initialdir = ..
 
-environment = "HOME=$ENV(HOME)"
-
 should_transfer_files   = YES
 when_to_transfer_output = ON_EXIT_OR_EVICT
 transfer_input_files    = run.py, utils.py, aLIGO_O4_high_asd.txt, $(injection_file_src)
 transfer_output_files   = $(outdir)
 
-arguments = run.py --seed $(seed) --label $(label) --type $(type) --injection-label $(injection_label) --injection-file $(injection_file_name) --outdir $(outdir)
+arguments = "-c 'export HOME=$PWD && exec /cvmfs/software.igwn.org/conda/envs/igwn-py311/bin/python run.py --seed $(seed) --label $(label) --type $(type) --injection-label $(injection_label) --injection-file $(injection_file_name) --outdir $(outdir)'"
 
 # Relative, nested inside the transferred outdir -- NOT absolute /home
 # paths. Absolute paths were the earlier failure mode: HTCondor tried to
