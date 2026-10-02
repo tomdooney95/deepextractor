@@ -27,13 +27,22 @@ Usage
         --control GW150914_control_outdir/GW150914_control_result.json \\
         --dirty GW150914_dirty_outdir/GW150914_dirty_result.json \\
         --out GW150914_control_vs_dirty_corner.png
+
+Default parameters: chirp_mass, mass_ratio, luminosity_distance,
+geocent_time, ra, dec, theta_jn (inclination, as theta_jn -- the angle
+between total angular momentum and line of sight -- since priors here are
+precessing-spin; pass --parameters to override, e.g. for the full 15-dim
+corner or a different subset).
 """
 
 import argparse
 
 import bilby
 
-DEFAULT_PARAMETERS = ["chirp_mass", "mass_ratio", "luminosity_distance", "geocent_time"]
+DEFAULT_PARAMETERS = [
+    "chirp_mass", "mass_ratio", "luminosity_distance", "geocent_time",
+    "ra", "dec", "theta_jn",
+]
 
 RUNS = [
     ("control", "Control (no glitch)"),
@@ -71,12 +80,16 @@ def main():
     injection_parameters = next(
         (r.injection_parameters for r in results if r.injection_parameters), None
     )
-    truths = (
-        {p: injection_parameters[p] for p in args.parameters if p in injection_parameters}
-        if injection_parameters else None
-    )
-    if not truths:
+    if injection_parameters is None:
         print("WARNING: no injection_parameters found on any result -- plotting without truth markers")
+        truths = None
+    else:
+        # corner's truths takes a plain list ordered to match `parameters`,
+        # not a dict -- a dict was silently not rendering any truth lines.
+        missing = [p for p in args.parameters if p not in injection_parameters]
+        if missing:
+            print(f"WARNING: no injected value for {missing} -- leaving those truth markers blank")
+        truths = [injection_parameters.get(p) for p in args.parameters]
 
     bilby.result.plot_multiple(
         results,
