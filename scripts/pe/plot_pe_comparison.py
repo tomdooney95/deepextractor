@@ -64,11 +64,26 @@ def main():
     results = [bilby.result.read_in_result(filename=path) for _, _, path in given]
     labels = [label for _, label, _ in given]
 
+    # All runs share the same injected event parameters (run.py passes
+    # injection_parameters into bilby.run_sampler(), which stores them on
+    # the Result) -- pull truth values from whichever result has them, for
+    # whichever parameters we're actually plotting.
+    injection_parameters = next(
+        (r.injection_parameters for r in results if r.injection_parameters), None
+    )
+    truths = (
+        {p: injection_parameters[p] for p in args.parameters if p in injection_parameters}
+        if injection_parameters else None
+    )
+    if not truths:
+        print("WARNING: no injection_parameters found on any result -- plotting without truth markers")
+
     bilby.result.plot_multiple(
         results,
         filename=args.out,
         labels=labels,
         parameters=args.parameters,
+        truths=truths,
         save=True,
     )
     print(f"Saved {args.out} ({', '.join(labels)})")
