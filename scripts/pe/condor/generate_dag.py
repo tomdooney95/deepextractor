@@ -31,9 +31,8 @@ ALL_EVENTS = [
 
 TYPES = ["control", "dirty", "prediction"]
 
-# Resolvable from job.sub's initialdir (scripts/pe/) at submit time.
-INJECTION_FILE_SRC = "../../PE_results/simulated_separation_v1/pe_cases_n10.pkl"
-INJECTION_FILE_NAME = Path(INJECTION_FILE_SRC).name
+# Default, resolvable from job.sub's initialdir (scripts/pe/) at submit time.
+DEFAULT_INJECTION_FILE_SRC = "../../PE_results/simulated_separation_v1/pe_cases_n10.pkl"
 SEED = "2026"
 
 
@@ -41,6 +40,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--events", type=str, default=None,
                          help="Comma-separated event subset (default: all 11 in-prior events)")
+    parser.add_argument("--injection-file", type=str, default=DEFAULT_INJECTION_FILE_SRC,
+                         help="Injection pickle, resolvable from scripts/pe/ at submit time "
+                              f"(default: {DEFAULT_INJECTION_FILE_SRC}). E.g. a single-realisation "
+                              "pickle from extract_realization.py.")
     parser.add_argument("--out", type=str, default="job.dag")
     args = parser.parse_args()
 
@@ -49,16 +52,22 @@ def main():
     if unknown:
         raise SystemExit(f"Unknown event(s): {unknown} (or excluded as out-of-prior-range)")
 
+    injection_file_src = args.injection_file
+    injection_file_name = Path(injection_file_src).name
+    # Non-default injection files get a suffix on job/outdir names so they
+    # can't collide with runs against the main pe_cases_n10.pkl sweep.
+    suffix = "" if injection_file_src == DEFAULT_INJECTION_FILE_SRC else f"_{Path(injection_file_src).stem}"
+
     lines = ["# DAGMan workflow: simulated-case control/dirty/prediction PE sweep", ""]
     for event in events:
         for ptype in TYPES:
-            job_name = f"{event}_{ptype}"
+            job_name = f"{event}_{ptype}{suffix}"
             outdir = f"{job_name}_outdir"
             lines.append(f"JOB {job_name} job.sub")
             lines.append(
                 f'VARS {job_name} seed="{SEED}" label="{job_name}" type="{ptype}" '
-                f'injection_label="{event}" injection_file_src="{INJECTION_FILE_SRC}" '
-                f'injection_file_name="{INJECTION_FILE_NAME}" outdir="{outdir}"'
+                f'injection_label="{event}" injection_file_src="{injection_file_src}" '
+                f'injection_file_name="{injection_file_name}" outdir="{outdir}"'
             )
             lines.append(f"RETRY {job_name} 2")
             lines.append("")
