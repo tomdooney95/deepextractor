@@ -34,6 +34,8 @@ def parse_args():
     p.add_argument("--events", type=str, default=None,
                    help="Comma-separated event subset (default: every event in the pickle)")
     p.add_argument("--out", required=True, help="Output pickle path")
+    p.add_argument("--quiet", action="store_true",
+                   help="Print only the winning realisation per event, not the full per-realisation table")
     return p.parse_args()
 
 
@@ -48,18 +50,31 @@ def main():
         raise SystemExit(f"Event(s) not in pickle: {unknown}. Available: {list(results.keys())}")
 
     best = {}
-    print(f"{'event':>12}  {'best r':>6}  {'sig H1 %':>9}  {'sig L1 %':>9}  {'glitch %':>9}  {'mean %':>7}")
+    summary_rows = []
+
     for event in events:
         realizations = results[event]
-        mean_mms = [
-            np.mean([ex["mismatch_signal_h1"], ex["mismatch_signal_l1"], ex["mismatch_glitch"]])
-            for ex in realizations
-        ]
-        i_best = int(np.argmin(mean_mms))
-        ex = realizations[i_best]
-        best[event] = [ex]
-        print(f"{event:>12}  {i_best:>6}  {ex['mismatch_signal_h1']:>9.1f}  "
-              f"{ex['mismatch_signal_l1']:>9.1f}  {ex['mismatch_glitch']:>9.1f}  {mean_mms[i_best]:>7.1f}")
+        rows = []
+        for i, ex in enumerate(realizations):
+            glitch_det = "H1" if ex["inject_h1"] else "L1"
+            mean_mm = np.mean([ex["mismatch_signal_h1"], ex["mismatch_signal_l1"], ex["mismatch_glitch"]])
+            rows.append((i, ex["mismatch_signal_h1"], ex["mismatch_signal_l1"], ex["mismatch_glitch"], glitch_det, mean_mm))
+        rows.sort(key=lambda r: r[-1])  # best (lowest mean mismatch) first
+
+        i_best = rows[0][0]
+        best[event] = [realizations[i_best]]
+        summary_rows.append((event, *rows[0]))
+
+        if not args.quiet:
+            print(f"\n{event} -- {len(realizations)} realisations, sorted best (lowest mean mismatch) to worst:")
+            print(f"{'r':>3}  {'sig H1 %':>9}  {'sig L1 %':>9}  {'glitch %':>9}  {'glitch in':>9}  {'mean %':>7}")
+            for i, mm_h1, mm_l1, mm_g, det, mean_mm in rows:
+                print(f"{i:>3}  {mm_h1:>9.1f}  {mm_l1:>9.1f}  {mm_g:>9.1f}  {det:>9}  {mean_mm:>7.1f}")
+
+    print(f"\n{'='*60}\nBest realisation per event:")
+    print(f"{'event':>12}  {'best r':>6}  {'sig H1 %':>9}  {'sig L1 %':>9}  {'glitch %':>9}  {'glitch in':>9}  {'mean %':>7}")
+    for event, i_best, mm_h1, mm_l1, mm_g, det, mean_mm in summary_rows:
+        print(f"{event:>12}  {i_best:>6}  {mm_h1:>9.1f}  {mm_l1:>9.1f}  {mm_g:>9.1f}  {det:>9}  {mean_mm:>7.1f}")
 
     with open(args.out, "wb") as f:
         pickle.dump(best, f)
