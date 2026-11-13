@@ -28,7 +28,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 from deepextractor.data import HDF5Dataset
@@ -124,8 +123,9 @@ def parse_args():
                    help="Enable mixed-precision (disabled by default — unstable with whitened targets)")
     p.add_argument("--patience",       type=int,   default=5,
                    help="Early stopping patience (epochs without val improvement)")
-    p.add_argument("--lr-patience",    type=int,   default=2,
-                   help="ReduceLROnPlateau patience")
+    p.add_argument("--lr-drop-after",  type=int, nargs="*", default=[2, 4],
+                   help="Multiply the LR by --lr-factor when the no-improvement count "
+                        "reaches each of these values (an improvement resets the count)")
     p.add_argument("--lr-factor",      type=float, default=0.1)
 
     # --- Checkpointing / output ---
@@ -140,7 +140,11 @@ def parse_args():
     p.add_argument("--device",         default=None,
                    help="Torch device string. Auto-selects best GPU if None.")
 
-    return p.parse_args()
+    args = p.parse_args()
+    args.lr_drop_after = sorted(args.lr_drop_after)
+    if args.lr_drop_after and args.lr_drop_after[-1] >= args.patience:
+        p.error("--lr-drop-after values must be below --patience")
+    return args
 
 
 # ---------------------------------------------------------------------------
@@ -213,11 +217,8 @@ def main():
     ).to(device)
     logger.info("Model: UNET1D_LSTM_ATT  out_channels=%d", out_channels)
 
-    # --- Optimiser / scheduler ---
+    # --- Optimiser ---
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = ReduceLROnPlateau(
-        optimizer, mode="min", factor=args.lr_factor, patience=args.lr_patience
-    )
     loss_fn = nn.MSELoss()
     grad_scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
 
@@ -227,10 +228,10 @@ def main():
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer"])
-        scheduler.load_state_dict(ckpt["scheduler"])
+        optimizer.load_state_dict(ckpt["optimizer"])  # restores the LR at the best epoch
         start_epoch = ckpt.get("epoch", 0) + 1
-        best_val_loss = ckpt["scheduler"]["best"]
+        # Older checkpoints kept the best val loss in the ReduceLROnPlateau state
+        best_val_loss = ckpt.get("best_val", ckpt.get("scheduler", {}).get("best", float("inf")))
         logger.info("Resumed from %s (epoch %d, best_val=%.4e)", args.resume, start_epoch, best_val_loss)
 
     # --- Training loop ---
@@ -243,6 +244,9 @@ def main():
         history["val_res"]   = []
 
     es_counter = 0
+    logger.info("Schedule: lr %.2e, x%s after %s epochs without improvement, stop after %d, "
+                "max %d epochs", optimizer.param_groups[0]["lr"], args.lr_factor,
+                args.lr_drop_after, args.patience, args.epochs)
 
     for epoch in range(start_epoch, start_epoch + args.epochs):
         logger.info("Epoch %d/%d", epoch + 1, start_epoch + args.epochs)
@@ -292,7 +296,6 @@ def main():
         history["val_bg"].append(val_bg)
         history["val_sig"].append(val_sig)
 
-        scheduler.step(val_total)
 
         # Checkpoint on improvement
         if val_total < best_val_loss:
@@ -301,8 +304,8 @@ def main():
             ckpt = {
                 "state_dict": model.state_dict(),
                 "optimizer":  optimizer.state_dict(),
-                "scheduler":  scheduler.state_dict(),
                 "epoch":      epoch,
+                "best_val":   best_val_loss,
                 "mode":       "td",
             }
             ckpt_path = out_dir / "checkpoint_best.pth.tar"
@@ -315,6 +318,10 @@ def main():
         if es_counter >= args.patience:
             logger.info("Early stopping at epoch %d", epoch + 1)
             break
+        if es_counter in args.lr_drop_after:
+            for group in optimizer.param_groups:
+                group["lr"] *= args.lr_factor
+            logger.info("LR reduced to %.2e", optimizer.param_groups[0]["lr"])
 
         # Periodic loss saves
         if args.save_every > 0 and epoch % args.save_every == 0:

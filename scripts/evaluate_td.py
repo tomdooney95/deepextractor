@@ -403,7 +403,7 @@ def main():
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     logger.info("Loaded checkpoint: epoch %d, best val loss %.4e",
-                ckpt.get("epoch", -1), ckpt.get("scheduler", {}).get("best", float("nan")))
+                ckpt.get("epoch", -1), ckpt.get("best_val", ckpt.get("scheduler", {}).get("best", float("nan"))))
 
     # --- Generate independent noise pools ---
     logger.info("Generating noise samples (N=%d per class × %d classes)...",
