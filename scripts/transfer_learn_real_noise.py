@@ -51,7 +51,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -328,11 +327,25 @@ def phase3_train(
     batch_size: int = 32,
     num_workers: int = 4,
     prefetch_factor: int = 2,
-    early_stopping_patience: int = 9,
+    early_stopping_patience: int = 5,
+    lr_drop_after: tuple = (2, 4),
+    lr_factor: float = 0.1,
     dropout_p: float = 0.0,
     in_memory: bool = False,
     resume: bool = False,
 ) -> None:
+    """
+    LR schedule and early stopping share one counter, ``no_improve``: the
+    number of consecutive epochs whose validation loss did not beat the best
+    so far. The LR is multiplied by ``lr_factor`` when the counter reaches
+    each value in ``lr_drop_after``, and training stops when it reaches
+    ``early_stopping_patience``. An improvement resets the counter but keeps
+    the current LR. Defaults: drop after 2 and 4 stalled epochs, stop after 5.
+    """
+    lr_drop_after = tuple(sorted(lr_drop_after))
+    if lr_drop_after and lr_drop_after[-1] >= early_stopping_patience:
+        raise ValueError(f"--lr-drop-after {lr_drop_after} must be below "
+                         f"--early-stopping-patience {early_stopping_patience}")
     model_name = "DeepExtractor_257"
 
     if in_memory:
@@ -369,7 +382,6 @@ def phase3_train(
     model = UNET2D(in_channels=2, out_channels=2, dropout_p=dropout_p).to(device)
     loss_fn   = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.1, patience=4)
     amp_scaler = (
         torch.amp.GradScaler("cuda") if device.startswith("cuda")
         else torch.amp.GradScaler("cpu")
@@ -377,24 +389,34 @@ def phase3_train(
 
     ckpt_path   = ckpt_dir / f"checkpoint_best_{label}_tl.pth.tar"
     start_epoch = 0
+    best_val = float("inf")
 
     if resume and ckpt_path.exists():
         logger.info(f"Resuming from {ckpt_path} ...")
         saved = torch.load(str(ckpt_path), map_location=device)
         load_checkpoint(saved, model)
-        load_optimizer(saved, optimizer)
-        if "scheduler" in saved:
-            scheduler.load_state_dict(saved["scheduler"])
+        load_optimizer(saved, optimizer)  # restores the LR in force at the best epoch
         start_epoch = saved.get("epoch", 0) + 1
-        logger.info(f"Resuming from epoch {start_epoch}")
+        if "best_val" in saved:
+            best_val = saved["best_val"]
+        else:
+            # Checkpoints from before best_val was stored: measure it, so the
+            # first resumed epoch cannot overwrite the checkpoint with a worse one.
+            logger.info("Checkpoint has no best_val — evaluating it on the val set ...")
+            best_val = check_accuracy(val_loader, model, model_name, device=device)[0]
+        logger.info(f"Resuming after epoch {start_epoch} (best val {best_val:.6f}, "
+                    f"lr {optimizer.param_groups[0]['lr']:.2e})")
     else:
         logger.info(f"Loading pretrained checkpoint: {pretrained_checkpoint}")
         ckpt = torch.load(str(pretrained_checkpoint), map_location=device)
         load_checkpoint(ckpt, model)
 
+    logger.info(f"Schedule: lr {optimizer.param_groups[0]['lr']:.2e}, ×{lr_factor} after "
+                f"{list(lr_drop_after)} epochs without improvement, stop after "
+                f"{early_stopping_patience}, max {epochs} epochs")
+
     train_losses, train_noise_losses, train_constraint_losses = [], [], []
     val_losses,   val_noise_losses,   val_constraint_losses   = [], [], []
-    best_val = float("inf")
     no_improve = 0
 
     for epoch in range(start_epoch, start_epoch + epochs):
@@ -413,7 +435,6 @@ def phase3_train(
         val_noise_losses.append(v_noise)
         val_constraint_losses.append(v_constr)
 
-        scheduler.step(v_loss)
         logger.info(
             f"  train={tr_loss:.6f}  val={v_loss:.6f}  "
             f"lr={optimizer.param_groups[0]['lr']:.2e}"
@@ -425,8 +446,8 @@ def phase3_train(
             save_checkpoint(
                 {"state_dict": model.state_dict(),
                  "optimizer":  optimizer.state_dict(),
-                 "scheduler":  scheduler.state_dict(),
-                 "epoch":      epoch},
+                 "epoch":      epoch,
+                 "best_val":   best_val},
                 str(ckpt_path),
             )
             logger.info(f"  Val improved → {ckpt_path}")
@@ -436,13 +457,17 @@ def phase3_train(
             if no_improve >= early_stopping_patience:
                 logger.info(f"Early stopping at epoch {epoch + 1}.")
                 break
+            if no_improve in lr_drop_after:
+                for group in optimizer.param_groups:
+                    group["lr"] *= lr_factor
+                logger.info(f"  LR reduced to {optimizer.param_groups[0]['lr']:.2e}")
 
         if (epoch + 1) % 10 == 0:
-            _save_losses(loss_dir, 0, epoch,
+            _save_losses(loss_dir, start_epoch, epoch,
                          train_losses, train_noise_losses, train_constraint_losses,
                          val_losses, val_noise_losses, val_constraint_losses)
 
-    _save_losses(loss_dir, 0, epoch,
+    _save_losses(loss_dir, start_epoch, epoch,
                  train_losses, train_noise_losses, train_constraint_losses,
                  val_losses, val_noise_losses, val_constraint_losses)
     logger.info(f"Done. Best val loss: {best_val:.6f}")
@@ -480,19 +505,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--injection-batch",   type=int,   default=1000)
     p.add_argument("--specgen-chunk",     type=int,   default=2000)
     # Training options
-    p.add_argument("--epochs",                    type=int,   default=50)
+    p.add_argument("--epochs",                    type=int,   default=150,
+                   help="Upper limit only; training normally ends by early stopping.")
     p.add_argument("--batch-size",                type=int,   default=32)
     p.add_argument("--lr",                        type=float, default=1e-5)
     p.add_argument("--num-workers",               type=int,   default=4)
     p.add_argument("--prefetch-factor",           type=int,   default=2)
-    p.add_argument("--early-stopping-patience",   type=int,   default=9)
+    p.add_argument("--early-stopping-patience",   type=int,   default=5,
+                   help="Stop after this many consecutive epochs without a new best val loss.")
+    p.add_argument("--lr-drop-after", type=int, nargs="*", default=[2, 4],
+                   help="Multiply the LR by --lr-factor when the no-improvement count "
+                        "reaches each of these values.")
+    p.add_argument("--lr-factor",     type=float, default=0.1)
     p.add_argument("--dropout-p",  type=float, default=0.0)
     p.add_argument("--skip-train", action="store_true",
                    help="Run phases 1 and 2 only (data prep + STFT), then exit. "
                         "Useful for inspecting data before committing to training.")
     p.add_argument("--resume", action="store_true",
-                   help="Resume from the existing TL checkpoint, restoring optimizer "
-                        "and scheduler state. Skips phases 1 and 2 automatically.")
+                   help="Resume from the existing TL checkpoint, restoring the weights, "
+                        "the optimizer state (incl. LR) and the best val loss. "
+                        "Skips phases 1 and 2 automatically.")
     p.add_argument("--in-memory", action="store_true",
                    help="Load all STFT data into RAM before training. Fastest option "
                         "when the node has enough memory (~1 MB per sample). "
@@ -567,6 +599,8 @@ def main() -> None:
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         early_stopping_patience=args.early_stopping_patience,
+        lr_drop_after=tuple(args.lr_drop_after),
+        lr_factor=args.lr_factor,
         dropout_p=args.dropout_p,
         in_memory=args.in_memory,
         resume=args.resume,

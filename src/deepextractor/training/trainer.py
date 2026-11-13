@@ -16,7 +16,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from deepextractor.models.architectures import (
     Autoencoder1D,
@@ -144,10 +143,19 @@ def main():
     parser.add_argument(
         "--early-stopping-patience",
         type=int,
-        default=9,
-        help="Number of epochs without improvement before stopping.",
+        default=5,
+        help="Stop after this many consecutive epochs without a new best val loss.",
     )
+    parser.add_argument(
+        "--lr-drop-after", type=int, nargs="*", default=[2, 4],
+        help="Multiply the LR by --lr-factor when the no-improvement count reaches each of "
+             "these values (an improvement resets the count).",
+    )
+    parser.add_argument("--lr-factor", type=float, default=0.1)
     args = parser.parse_args()
+    args.lr_drop_after = sorted(args.lr_drop_after)
+    if args.lr_drop_after and args.lr_drop_after[-1] >= args.early_stopping_patience:
+        parser.error("--lr-drop-after values must be below --early-stopping-patience")
 
     # --- Device ---
     if args.device is not None:
@@ -230,12 +238,12 @@ def main():
             num_workers=args.num_workers, pin_memory=True, time_domain=False,
         )
 
-    # --- Optimizer and scheduler ---
+    # --- Optimizer ---
     loss_fn = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.1, patience=4)
 
     start_epoch = 0
+    best_val_loss = float("inf")
     if args.resume:
         # Resume interrupted training: same directories, same checkpoint naming.
         # Losses will be saved with a new epoch-range suffix so the files from
@@ -245,11 +253,13 @@ def main():
             logger.info(f"Resuming from {checkpoint_path} ...")
             checkpoint = torch.load(str(checkpoint_path), map_location=device)
             load_checkpoint(checkpoint, model)
-            load_optimizer(checkpoint, optimizer)
-            if "scheduler" in checkpoint:
-                scheduler.load_state_dict(checkpoint["scheduler"])
+            load_optimizer(checkpoint, optimizer)  # restores the LR in force at the best epoch
+            # Older checkpoints kept the best val loss in the ReduceLROnPlateau state
+            best_val_loss = checkpoint.get(
+                "best_val", checkpoint.get("scheduler", {}).get("best", float("inf")))
             start_epoch = checkpoint.get("epoch", 0) + 1
-            logger.info(f"Resuming from epoch {start_epoch}")
+            logger.info(f"Resuming from epoch {start_epoch} (best val {best_val_loss:.6}, "
+                        f"lr {optimizer.param_groups[0]['lr']:.2e})")
         except Exception as e:
             logger.error(f"Failed to load checkpoint for resume: {e}")
             return
@@ -270,7 +280,9 @@ def main():
     val_losses, val_noise_losses, val_constraint_losses = [], [], []
     scaler = torch.amp.GradScaler("cuda") if device.startswith("cuda") else torch.amp.GradScaler("cpu")
     early_stopping_counter = 0
-    best_val_loss = float("inf")
+    logger.info(f"Schedule: lr {optimizer.param_groups[0]['lr']:.2e}, ×{args.lr_factor} after "
+                f"{args.lr_drop_after} epochs without improvement, stop after "
+                f"{args.early_stopping_patience}, max {args.epochs} epochs")
 
     for epoch in range(start_epoch, start_epoch + args.epochs):
         logger.info(f"Epoch {epoch + 1}/{args.epochs}")
@@ -289,9 +301,7 @@ def main():
         val_noise_losses.append(val_noise_loss)
         val_constraint_losses.append(val_constraint_loss)
 
-        scheduler.step(val_loss)
-        current_lr = scheduler.optimizer.param_groups[0]["lr"]
-        logger.info(f"Current learning rate: {current_lr}")
+        logger.info(f"Current learning rate: {optimizer.param_groups[0]['lr']}")
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -299,8 +309,8 @@ def main():
             checkpoint = {
                 "state_dict": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
                 "epoch": epoch,
+                "best_val": best_val_loss,
             }
             ckpt_filename = (
                 model_checkpoint_dir / f"checkpoint_best_{noise_ext}_{tl_ext}.pth.tar"
@@ -317,6 +327,10 @@ def main():
         if early_stopping_counter >= args.early_stopping_patience:
             logger.info(f"Early stopping after {epoch + 1} epochs.")
             break
+        if early_stopping_counter in args.lr_drop_after:
+            for group in optimizer.param_groups:
+                group["lr"] *= args.lr_factor
+            logger.info(f"LR reduced to {optimizer.param_groups[0]['lr']:.2e}")
 
         if epoch % 10 == 0:
             _save_losses(
